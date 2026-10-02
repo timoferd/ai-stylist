@@ -22,9 +22,11 @@ st.set_page_config(
     layout="centered"
 )
 
-# Получаем API-ключ:
-# локально — из .env
-# на сервере Coolify — из Environment Variables
+
+# =========================================================
+# API
+# =========================================================
+
 api_key = os.getenv("AITUNNEL_API_KEY")
 
 if not api_key:
@@ -39,36 +41,38 @@ if not api_key:
 client = OpenAI(
     api_key=api_key,
     base_url="https://api.aitunnel.ru/v1",
-    timeout=300.0,
-    max_retries=3
-)
-
-
-MODEL = "gpt-5.6-sol"
-
-client = OpenAI(
-    api_key=api_key,
-    base_url="https://api.aitunnel.ru/v1",
     timeout=600.0,
     max_retries=2
 )
 
+MODEL = "gpt-5.6-sol"
+
 
 # =========================================================
-# БАЗА ДАННЫХ
+# DATA STORAGE
 # =========================================================
 
-DATA_DIR = os.getenv("DATA_DIR", "/app/data")
-os.makedirs(DATA_DIR, exist_ok=True)
+DATA_DIR = os.getenv(
+    "DATA_DIR",
+    "/app/data"
+)
 
-DB_FILE = os.path.join(DATA_DIR, "ai_stylist.db")
+os.makedirs(
+    DATA_DIR,
+    exist_ok=True
+)
 
+DB_FILE = os.path.join(
+    DATA_DIR,
+    "ai_stylist.db"
+)
+
+
+# =========================================================
+# DATABASE
+# =========================================================
 
 def get_db():
-    """
-    Подключение к SQLite.
-    """
-
     connection = sqlite3.connect(
         DB_FILE,
         check_same_thread=False
@@ -79,18 +83,38 @@ def get_db():
     return connection
 
 
+def column_exists(
+    connection,
+    table_name,
+    column_name
+):
+    cursor = connection.cursor()
+
+    cursor.execute(
+        f"PRAGMA table_info({table_name})"
+    )
+
+    columns = cursor.fetchall()
+
+    return any(
+        column["name"] == column_name
+        for column in columns
+    )
+
+
 def init_database():
     """
-    Создаёт таблицы при первом запуске.
+    Создаёт таблицы и при необходимости
+    обновляет существующую базу.
     """
 
     connection = get_db()
 
     cursor = connection.cursor()
 
-    # -----------------------------------------------------
-    # Анализы образов
-    # -----------------------------------------------------
+    # =====================================================
+    # АНАЛИЗЫ
+    # =====================================================
 
     cursor.execute(
         """
@@ -114,9 +138,9 @@ def init_database():
         """
     )
 
-    # -----------------------------------------------------
-    # Сохранённые образы гардероба
-    # -----------------------------------------------------
+    # =====================================================
+    # СОХРАНЁННЫЕ ОБРАЗЫ
+    # =====================================================
 
     cursor.execute(
         """
@@ -135,6 +159,42 @@ def init_database():
         )
         """
     )
+
+    # =====================================================
+    # МИГРАЦИЯ
+    # =====================================================
+    #
+    # В старой версии saved_outfits не было фотографий.
+    #
+    # Добавляем:
+    #
+    # images_json
+    #
+    # В нём будут храниться фотографии вещей:
+    #
+    # [
+    #   {
+    #       "number": 1,
+    #       "name": "...",
+    #       "type": "image/jpeg",
+    #       "data": "base64..."
+    #   }
+    # ]
+    #
+    # =====================================================
+
+    if not column_exists(
+        connection,
+        "saved_outfits",
+        "images_json"
+    ):
+
+        cursor.execute(
+            """
+            ALTER TABLE saved_outfits
+            ADD COLUMN images_json TEXT
+            """
+        )
 
     connection.commit()
 
@@ -155,10 +215,6 @@ def save_analysis_to_db(
     image_name=None,
     image_type=None
 ):
-    """
-    Сохраняет анализ и фотографию в SQLite.
-    """
-
     connection = get_db()
 
     cursor = connection.cursor()
@@ -203,11 +259,6 @@ def update_analysis_improvement(
     analysis_id,
     improved_result
 ):
-    """
-    Сохраняет улучшенную версию
-    существующего анализа.
-    """
-
     connection = get_db()
 
     cursor = connection.cursor()
@@ -230,10 +281,6 @@ def update_analysis_improvement(
 
 
 def get_all_analyses():
-    """
-    Возвращает все сохранённые анализы.
-    """
-
     connection = get_db()
 
     cursor = connection.cursor()
@@ -253,11 +300,9 @@ def get_all_analyses():
     return rows
 
 
-def get_analysis(analysis_id):
-    """
-    Возвращает один анализ.
-    """
-
+def get_analysis(
+    analysis_id
+):
     connection = get_db()
 
     cursor = connection.cursor()
@@ -278,11 +323,9 @@ def get_analysis(analysis_id):
     return row
 
 
-def delete_analysis(analysis_id):
-    """
-    Удаляет анализ.
-    """
-
+def delete_analysis(
+    analysis_id
+):
     connection = get_db()
 
     cursor = connection.cursor()
@@ -304,10 +347,6 @@ def analysis_exists(
     style,
     analysis
 ):
-    """
-    Проверяет, сохранён ли уже такой анализ.
-    """
-
     connection = get_db()
 
     cursor = connection.cursor()
@@ -337,19 +376,83 @@ def analysis_exists(
 # DATABASE — СОХРАНЁННЫЕ ОБРАЗЫ
 # =========================================================
 
+def prepare_wardrobe_images(
+    wardrobe_files
+):
+    """
+    Превращает фотографии вещей
+    в JSON-совместимый формат.
+
+    Фотографии сохраняются прямо в SQLite.
+    """
+
+    images = []
+
+    if not wardrobe_files:
+        return images
+
+    for number, wardrobe_file in enumerate(
+        wardrobe_files,
+        start=1
+    ):
+
+        try:
+
+            image_bytes = wardrobe_file.getvalue()
+
+            image_type = (
+                wardrobe_file.type
+                or "image/jpeg"
+            )
+
+            image_name = (
+                wardrobe_file.name
+                or f"item_{number}.jpg"
+            )
+
+            image_base64 = base64.b64encode(
+                image_bytes
+            ).decode("utf-8")
+
+            images.append(
+                {
+                    "number": number,
+                    "name": image_name,
+                    "type": image_type,
+                    "data": image_base64
+                }
+            )
+
+        except Exception:
+            continue
+
+    return images
+
+
 def save_wardrobe_outfit(
     name,
     style,
     items,
-    explanation
+    explanation,
+    wardrobe_files=None
 ):
     """
-    Сохраняет образ из гардероба.
+    Сохраняет образ вместе
+    с фотографиями его вещей.
     """
 
     connection = get_db()
 
     cursor = connection.cursor()
+
+    images = prepare_wardrobe_images(
+        wardrobe_files
+    )
+
+    images_json = json.dumps(
+        images,
+        ensure_ascii=False
+    )
 
     cursor.execute(
         """
@@ -359,9 +462,10 @@ def save_wardrobe_outfit(
             style,
             items_json,
             explanation,
-            created_at
+            created_at,
+            images_json
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -373,20 +477,21 @@ def save_wardrobe_outfit(
             explanation,
             datetime.now().strftime(
                 "%Y-%m-%d %H:%M:%S"
-            )
+            ),
+            images_json
         )
     )
 
     connection.commit()
 
+    outfit_id = cursor.lastrowid
+
     connection.close()
+
+    return outfit_id
 
 
 def get_saved_wardrobe_outfits():
-    """
-    Возвращает сохранённые образы гардероба.
-    """
-
     connection = get_db()
 
     cursor = connection.cursor()
@@ -409,10 +514,6 @@ def get_saved_wardrobe_outfits():
 def delete_saved_wardrobe_outfit(
     outfit_id
 ):
-    """
-    Удаляет сохранённый образ гардероба.
-    """
-
     connection = get_db()
 
     cursor = connection.cursor()
@@ -430,11 +531,66 @@ def delete_saved_wardrobe_outfit(
     connection.close()
 
 
+def get_saved_outfit_images(
+    saved
+):
+    """
+    Возвращает сохранённые фотографии
+    конкретного образа.
+    """
+
+    try:
+
+        images_json = saved["images_json"]
+
+        if not images_json:
+            return []
+
+        images = json.loads(
+            images_json
+        )
+
+        if not isinstance(
+            images,
+            list
+        ):
+            return []
+
+        return images
+
+    except Exception:
+
+        return []
+
+
+def image_from_saved_data(
+    image_data
+):
+    """
+    Декодирует сохранённую
+    фотографию из SQLite.
+    """
+
+    try:
+
+        raw = base64.b64decode(
+            image_data["data"]
+        )
+
+        return raw
+
+    except Exception:
+
+        return None
+
+
 # =========================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================================================
 
-def image_to_data_url(uploaded_file):
+def image_to_data_url(
+    uploaded_file
+):
 
     image_data = base64.b64encode(
         uploaded_file.getvalue()
@@ -451,7 +607,9 @@ def image_to_data_url(uploaded_file):
     )
 
 
-def extract_json(text):
+def extract_json(
+    text
+):
 
     if not text:
         raise ValueError(
@@ -476,31 +634,43 @@ def extract_json(text):
     text = text.strip()
 
     try:
-        return json.loads(text)
+
+        return json.loads(
+            text
+        )
 
     except json.JSONDecodeError:
 
         start = text.find("{")
         end = text.rfind("}")
 
-        if start != -1 and end != -1:
+        if (
+            start != -1
+            and end != -1
+        ):
 
             return json.loads(
-                text[start:end + 1]
+                text[
+                    start:end + 1
+                ]
             )
 
         raise
 
 
-def safe_int(value):
+def safe_int(
+    value
+):
 
     try:
+
         return int(value)
 
     except (
         TypeError,
         ValueError
     ):
+
         return None
 
 
@@ -604,10 +774,13 @@ STYLES = [
 ]
 
 
-st.header("🎨 Выбери свой стиль")
+st.header(
+    "🎨 Выбери свой стиль"
+)
 
 
 style_columns = st.columns(2)
+
 
 for i, style_name in enumerate(
     STYLES
@@ -636,7 +809,9 @@ for i, style_name in enumerate(
             )
 
 
-style = st.session_state.selected_style
+style = (
+    st.session_state.selected_style
+)
 
 
 st.success(
@@ -650,7 +825,9 @@ st.success(
 
 st.divider()
 
-st.header("📸 Анализ твоего образа")
+st.header(
+    "📸 Анализ твоего образа"
+)
 
 
 uploaded_file = st.file_uploader(
@@ -666,7 +843,9 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
 
-    image_bytes = uploaded_file.getvalue()
+    image_bytes = (
+        uploaded_file.getvalue()
+    )
 
     st.image(
         image_bytes,
@@ -695,8 +874,10 @@ if uploaded_file:
 
             try:
 
-                image_url = image_to_data_url(
-                    uploaded_file
+                image_url = (
+                    image_to_data_url(
+                        uploaded_file
+                    )
                 )
 
                 prompt = f"""
@@ -910,7 +1091,6 @@ if st.session_state.analysis_result:
 
             try:
 
-                # Проверяем дубликат
                 if analysis_exists(
                     analysis_style,
                     st.session_state.analysis_result
@@ -923,25 +1103,27 @@ if st.session_state.analysis_result:
 
                 else:
 
-                    saved_id = save_analysis_to_db(
-                        style=analysis_style,
-                        analysis=(
-                            st.session_state.analysis_result
-                        ),
-                        image_bytes=(
-                            uploaded_file.getvalue()
-                            if uploaded_file
-                            else None
-                        ),
-                        image_name=(
-                            uploaded_file.name
-                            if uploaded_file
-                            else None
-                        ),
-                        image_type=(
-                            uploaded_file.type
-                            if uploaded_file
-                            else None
+                    saved_id = (
+                        save_analysis_to_db(
+                            style=analysis_style,
+                            analysis=(
+                                st.session_state.analysis_result
+                            ),
+                            image_bytes=(
+                                uploaded_file.getvalue()
+                                if uploaded_file
+                                else None
+                            ),
+                            image_name=(
+                                uploaded_file.name
+                                if uploaded_file
+                                else None
+                            ),
+                            image_type=(
+                                uploaded_file.type
+                                if uploaded_file
+                                else None
+                            )
                         )
                     )
 
@@ -1077,8 +1259,6 @@ if st.session_state.analysis_result:
                     improved_result
                 )
 
-                # Если анализ уже сохранён —
-                # сохраняем улучшение тоже
                 if (
                     st.session_state.current_analysis_id
                 ):
@@ -1126,7 +1306,10 @@ st.header(
     "🗂️ Сохранённые анализы"
 )
 
-saved_analyses = get_all_analyses()
+
+saved_analyses = (
+    get_all_analyses()
+)
 
 
 if not saved_analyses:
@@ -1138,9 +1321,9 @@ if not saved_analyses:
 else:
 
     st.write(
-        f"Всего сохранено: **{len(saved_analyses)}**"
+        f"Всего сохранено: "
+        f"**{len(saved_analyses)}**"
     )
-
 
     for saved in saved_analyses:
 
@@ -1156,10 +1339,6 @@ else:
             expanded=False
         ):
 
-            # ---------------------------------------------
-            # ФОТО
-            # ---------------------------------------------
-
             if saved["image"]:
 
                 st.image(
@@ -1171,28 +1350,13 @@ else:
                     width="stretch"
                 )
 
-
-            # ---------------------------------------------
-            # СТИЛЬ
-            # ---------------------------------------------
-
             st.info(
                 f"🎨 Стиль: **{saved['style']}**"
             )
 
-
-            # ---------------------------------------------
-            # АНАЛИЗ
-            # ---------------------------------------------
-
             st.markdown(
                 saved["analysis"]
             )
-
-
-            # ---------------------------------------------
-            # УЛУЧШЕНИЕ
-            # ---------------------------------------------
 
             if saved["improved_result"]:
 
@@ -1206,11 +1370,6 @@ else:
                     saved["improved_result"]
                 )
 
-
-            # ---------------------------------------------
-            # УДАЛЕНИЕ
-            # ---------------------------------------------
-
             st.divider()
 
             if st.button(
@@ -1223,7 +1382,6 @@ else:
                     analysis_id
                 )
 
-                # Если удалили текущий анализ
                 if (
                     st.session_state.current_analysis_id
                     == analysis_id
@@ -1283,7 +1441,6 @@ if wardrobe_files:
             f"{len(wardrobe_files)} ✅"
         )
 
-
         # -------------------------------------------------
         # ПОКАЗ ВЕЩЕЙ
         # -------------------------------------------------
@@ -1302,9 +1459,7 @@ if wardrobe_files:
                     width="stretch"
                 )
 
-
         st.divider()
-
 
         # -------------------------------------------------
         # СОБРАТЬ ОБРАЗЫ
@@ -1414,14 +1569,12 @@ if wardrobe_files:
 тело или привлекательность.
 """
 
-
                     content = [
                         {
                             "type": "text",
                             "text": wardrobe_prompt
                         }
                     ]
-
 
                     for wardrobe_file in wardrobe_files:
 
@@ -1435,7 +1588,6 @@ if wardrobe_files:
                                 }
                             }
                         )
-
 
                     response = (
                         client
@@ -1453,7 +1605,6 @@ if wardrobe_files:
                         )
                     )
 
-
                     wardrobe_text = (
                         response
                         .choices[0]
@@ -1461,11 +1612,11 @@ if wardrobe_files:
                         .content
                     )
 
-
-                    wardrobe_data = extract_json(
-                        wardrobe_text
+                    wardrobe_data = (
+                        extract_json(
+                            wardrobe_text
+                        )
                     )
-
 
                     if not isinstance(
                         wardrobe_data,
@@ -1476,7 +1627,6 @@ if wardrobe_files:
                             "Неверный формат JSON."
                         )
 
-
                     st.session_state.wardrobe_data = (
                         wardrobe_data
                     )
@@ -1484,7 +1634,6 @@ if wardrobe_files:
                     st.success(
                         "🎉 Гардероб готов!"
                     )
-
 
                 except Exception as e:
 
@@ -1520,31 +1669,18 @@ if st.session_state.wardrobe_data:
         st.session_state.wardrobe_data
     )
 
-
     st.divider()
 
     st.header(
         "✨ Твой AI-гардероб"
     )
 
-
     items = wardrobe_data.get(
         "items",
         []
     )
 
-
-    # -----------------------------------------------------
-    # ВЕЩИ
-    # -----------------------------------------------------
-
-    st.subheader(
-        "👕 Распознанные вещи"
-    )
-
-
     item_by_number = {}
-
 
     for item in items:
 
@@ -1556,6 +1692,13 @@ if st.session_state.wardrobe_data:
 
             item_by_number[number] = item
 
+    # -----------------------------------------------------
+    # ВЕЩИ
+    # -----------------------------------------------------
+
+    st.subheader(
+        "👕 Распознанные вещи"
+    )
 
     if items:
 
@@ -1601,12 +1744,13 @@ if st.session_state.wardrobe_data:
                     f"{item.get('brand_confidence', '—')}"
                 )
 
-                if item.get("description"):
+                if item.get(
+                    "description"
+                ):
 
                     st.caption(
                         item["description"]
                     )
-
 
     # -----------------------------------------------------
     # ОБРАЗЫ
@@ -1616,21 +1760,14 @@ if st.session_state.wardrobe_data:
         "🔥 Образы"
     )
 
-
     outfits = wardrobe_data.get(
         "outfits",
         []
     )
 
-
     for outfit_index, outfit in enumerate(
         outfits
     ):
-
-        outfit_number = outfit.get(
-            "number",
-            outfit_index + 1
-        )
 
         outfit_name = outfit.get(
             "name",
@@ -1641,25 +1778,24 @@ if st.session_state.wardrobe_data:
             f"## 🔥 {outfit_name}"
         )
 
-
         outfit_items = outfit.get(
             "items",
             []
         )
 
-
         selected_items = []
 
         for number in outfit_items:
 
-            number = safe_int(number)
+            number = safe_int(
+                number
+            )
 
             if number in item_by_number:
 
                 selected_items.append(
                     item_by_number[number]
                 )
-
 
         if selected_items:
 
@@ -1669,7 +1805,6 @@ if st.session_state.wardrobe_data:
                     3
                 )
             )
-
 
             for index, item in enumerate(
                 selected_items
@@ -1709,19 +1844,16 @@ if st.session_state.wardrobe_data:
                         )
                     )
 
-
         explanation = outfit.get(
             "explanation",
             ""
         )
-
 
         if explanation:
 
             st.info(
                 f"💡 {explanation}"
             )
-
 
         # -------------------------------------------------
         # СОХРАНЕНИЕ ОБРАЗА
@@ -1735,15 +1867,18 @@ if st.session_state.wardrobe_data:
 
             try:
 
-                save_wardrobe_outfit(
-                    name=outfit_name,
-                    style=style,
-                    items=outfit_items,
-                    explanation=explanation
+                saved_id = (
+                    save_wardrobe_outfit(
+                        name=outfit_name,
+                        style=style,
+                        items=outfit_items,
+                        explanation=explanation,
+                        wardrobe_files=wardrobe_files
+                    )
                 )
 
                 st.success(
-                    "⭐ Образ сохранён!"
+                    f"⭐ Образ сохранён! ID: {saved_id}"
                 )
 
             except Exception as e:
@@ -1756,12 +1891,11 @@ if st.session_state.wardrobe_data:
                     str(e)
                 )
 
-
         st.divider()
 
 
 # =========================================================
-# СОХРАНЁННЫЕ ОБРАЗЫ ГАРДЕРОБА
+# СОХРАНЁННЫЕ ОБРАЗЫ
 # =========================================================
 
 st.header(
@@ -1793,6 +1927,9 @@ else:
                 f"🎨 Стиль: **{saved['style']}**"
             )
 
+            # ---------------------------------------------
+            # ВЕЩИ
+            # ---------------------------------------------
 
             try:
 
@@ -1804,7 +1941,6 @@ else:
 
                 saved_items = []
 
-
             st.write(
                 "Вещи: "
                 + ", ".join(
@@ -1813,6 +1949,67 @@ else:
                 )
             )
 
+            # ---------------------------------------------
+            # ФОТОГРАФИИ
+            # ---------------------------------------------
+
+            saved_images = (
+                get_saved_outfit_images(
+                    saved
+                )
+            )
+
+            if saved_images:
+
+                st.subheader(
+                    "📸 Фотографии вещей"
+                )
+
+                image_columns = st.columns(
+                    min(
+                        len(saved_images),
+                        3
+                    )
+                )
+
+                for image_index, image_data in enumerate(
+                    saved_images
+                ):
+
+                    image_bytes = (
+                        image_from_saved_data(
+                            image_data
+                        )
+                    )
+
+                    if image_bytes:
+
+                        with image_columns[
+                            image_index
+                            % len(image_columns)
+                        ]:
+
+                            st.image(
+                                image_bytes,
+                                caption=(
+                                    image_data.get(
+                                        "name",
+                                        f"Вещь №{image_index + 1}"
+                                    )
+                                ),
+                                width="stretch"
+                            )
+
+            else:
+
+                st.info(
+                    "📷 Для этого образа фотографии "
+                    "ещё не были сохранены."
+                )
+
+            # ---------------------------------------------
+            # ОПИСАНИЕ
+            # ---------------------------------------------
 
             if saved["explanation"]:
 
@@ -1820,6 +2017,11 @@ else:
                     saved["explanation"]
                 )
 
+            # ---------------------------------------------
+            # УДАЛЕНИЕ
+            # ---------------------------------------------
+
+            st.divider()
 
             if st.button(
                 "🗑️ Удалить образ",
