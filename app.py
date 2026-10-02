@@ -45,7 +45,7 @@ client = OpenAI(
 MODEL = "gpt-5.6-sol"
 
 client = OpenAI(
-    api_key=API_KEY,
+    api_key=api_key,
     base_url="https://api.aitunnel.ru/v1",
     timeout=600.0,
     max_retries=2
