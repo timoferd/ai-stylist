@@ -1,7 +1,21 @@
+# Секреты
+.env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+
+# Виртуальное окружение
 .venv/
 venv/
-.env
+env/
+
+# Streamlit secrets
 .streamlit/secrets.toml
+
+# Системные файлы
 .DS_Store
+Thumbs.db
