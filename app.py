@@ -2,7 +2,7 @@ import os
 import json
 import base64
 import re
-import sqlite
+import sqlite3
 
 import streamlit as st
 from dotenv import load_dotenv
