@@ -2,8 +2,6 @@ import os
 import json
 import base64
 import re
-import sqlite3
-from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -22,15 +20,26 @@ st.set_page_config(
     layout="centered"
 )
 
-API_KEY = os.getenv("AITUNNEL_API_KEY")
+# Получаем API-ключ:
+# локально — из .env
+# на сервере Coolify — из Environment Variables
+api_key = os.getenv("AITUNNEL_API_KEY")
 
-if not API_KEY:
-    st.error("❌ API-ключ не найден в .env")
+if not api_key:
+    st.error("❌ API-ключ AITUNNEL_API_KEY не найден.")
     st.info(
-        "Создай файл .env рядом с app.py и добавь:\n\n"
-        "AITUNNEL_API_KEY=твой_ключ"
+        "Добавь переменную AITUNNEL_API_KEY "
+        "в Environment Variables в Coolify."
     )
     st.stop()
+
+
+client = OpenAI(
+    api_key=api_key,
+    base_url="https://api.aitunnel.ru/v1",
+    timeout=300.0,
+    max_retries=3
+)
 
 
 MODEL = "gpt-5.6-sol"
