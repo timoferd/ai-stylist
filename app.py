@@ -58,7 +58,10 @@ client = OpenAI(
 # БАЗА ДАННЫХ
 # =========================================================
 
-DB_FILE = "ai_stylist.db"
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+DB_FILE = os.path.join(DATA_DIR, "ai_stylist.db")
 
 
 def get_db():
