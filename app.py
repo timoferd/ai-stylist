@@ -5,8 +5,8 @@ import re
 import sqlite3
 import hashlib
 import secrets
+import html
 from datetime import datetime
-from html import escape
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -77,9 +77,18 @@ client = OpenAI(
 st.markdown(
     """
     <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+
+    #MainMenu {
+        visibility: hidden;
+    }
+
+    footer {
+        visibility: hidden;
+    }
+
+    header {
+        visibility: hidden;
+    }
 
     .block-container {
         max-width: 1180px;
@@ -104,12 +113,14 @@ st.markdown(
         font-weight: 850;
         letter-spacing: -1.5px;
         margin: 0;
+        line-height: 1.1;
     }
 
     .hero-subtitle {
         color: #777;
         font-size: 17px;
-        margin-top: 6px;
+        margin-top: 8px;
+        line-height: 1.5;
     }
 
     .card {
@@ -134,6 +145,7 @@ st.markdown(
         font-size: 34px;
         font-weight: 850;
         margin-top: 3px;
+        line-height: 1.2;
     }
 
     .login-wrap {
@@ -154,6 +166,20 @@ st.markdown(
         margin-bottom: 28px;
     }
 
+    .account-email {
+        color: #111;
+        font-weight: 600;
+        text-decoration: none !important;
+        cursor: default;
+        pointer-events: none;
+    }
+
+    .account-email * {
+        color: #111 !important;
+        text-decoration: none !important;
+        pointer-events: none !important;
+    }
+
     div[data-testid="stTabs"] button {
         font-size: 16px;
         font-weight: 700;
@@ -165,38 +191,37 @@ st.markdown(
         margin-top: 5px;
     }
 
-    /* =====================================================
-       EMAIL В ШАПКЕ — НЕ КЛИКАБЕЛЬНЫЙ
-       ===================================================== */
-
-    .account-email {
-        color: #777;
-        font-size: 14px;
-        cursor: default !important;
-        pointer-events: none !important;
-        user-select: none !important;
-        -webkit-user-select: none !important;
-        text-decoration: none !important;
-    }
-
-    .account-email a {
-        color: inherit !important;
-        text-decoration: none !important;
-        pointer-events: none !important;
-        cursor: default !important;
-    }
-
-    /* =====================================================
-       КНОПКА ВЫХОДА
-       ===================================================== */
-
-    .logout-button {
-        width: 100%;
-    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+# =========================================================
+# ВСПОМОГАТЕЛЬНЫЙ HTML
+# =========================================================
+
+def render_html(content):
+    """
+    Надёжный рендер HTML через st.html().
+    Это предотвращает отображение <div>...</div>
+    как обычного текста.
+    """
+    try:
+        st.html(content)
+    except AttributeError:
+        # Запасной вариант для старых версий Streamlit.
+        st.markdown(content, unsafe_allow_html=True)
+
+
+def safe_html_text(value):
+    """
+    Экранирует пользовательский текст перед вставкой в HTML.
+    """
+    if value is None:
+        return ""
+
+    return html.escape(str(value))
 
 
 # =========================================================
@@ -214,10 +239,7 @@ def column_exists(con, table, column):
         f"PRAGMA table_info({table})"
     ).fetchall()
 
-    return any(
-        row["name"] == column
-        for row in rows
-    )
+    return any(row["name"] == column for row in rows)
 
 
 def init_database():
@@ -299,35 +321,18 @@ def init_database():
     )
 
     # -----------------------------------------------------
-    # Миграция старой базы
+    # МИГРАЦИИ
     # -----------------------------------------------------
 
-    for table in (
-        "outfit_analyses",
-        "saved_outfits",
-    ):
-        if not column_exists(
-            con,
-            table,
-            "user_id",
-        ):
+    for table in ("outfit_analyses", "saved_outfits"):
+        if not column_exists(con, table, "user_id"):
             cur.execute(
-                f"""
-                ALTER TABLE {table}
-                ADD COLUMN user_id INTEGER
-                """
+                f"ALTER TABLE {table} ADD COLUMN user_id INTEGER"
             )
 
-    if not column_exists(
-        con,
-        "saved_outfits",
-        "images_json",
-    ):
+    if not column_exists(con, "saved_outfits", "images_json"):
         cur.execute(
-            """
-            ALTER TABLE saved_outfits
-            ADD COLUMN images_json TEXT
-            """
+            "ALTER TABLE saved_outfits ADD COLUMN images_json TEXT"
         )
 
     con.commit()
@@ -361,9 +366,7 @@ def hash_password(password):
 
 def verify_password(password, stored):
     try:
-        algorithm, iterations, salt_b64, digest_b64 = (
-            stored.split("$")
-        )
+        algorithm, iterations, salt_b64, digest_b64 = stored.split("$")
 
         if algorithm != "pbkdf2_sha256":
             return False
@@ -422,8 +425,8 @@ def create_user(email, password):
 
         user_id = cur.lastrowid
 
-        # Старые записи без user_id принадлежат
-        # первому созданному пользователю.
+        # Старые записи без user_id
+        # принадлежат первому пользователю.
         cur.execute(
             """
             UPDATE outfit_analyses
@@ -497,24 +500,6 @@ def get_user(user_id):
 
 
 # =========================================================
-# ВЫХОД ИЗ АККАУНТА
-# =========================================================
-
-def logout():
-    """
-    Полностью очищает текущую сессию.
-
-    Важно:
-    функция НЕ вызывает st.rerun().
-    Она используется как callback кнопки.
-    Streamlit автоматически перезапустит страницу
-    после выполнения callback.
-    """
-
-    st.session_state.clear()
-
-
-# =========================================================
 # БАЛАНС И ОПЕРАЦИИ
 # =========================================================
 
@@ -560,8 +545,8 @@ def charge_user(
     description,
 ):
     """
-    Безопасное списание внутри одной
-    SQLite-транзакции.
+    Безопасное списание внутри
+    одной SQLite-транзакции.
     """
 
     con = get_db()
@@ -580,10 +565,11 @@ def charge_user(
             (user_id,),
         ).fetchone()
 
-        if (
-            not user
-            or int(user["balance"]) < amount
-        ):
+        if not user:
+            con.rollback()
+            return False
+
+        if int(user["balance"]) < amount:
             con.rollback()
             return False
 
@@ -629,7 +615,6 @@ def charge_user(
 
 def use_free_analysis(user_id):
     con = get_db()
-
     cur = con.cursor()
 
     cur.execute(
@@ -652,7 +637,6 @@ def use_free_analysis(user_id):
 
 def use_free_wardrobe_outfit(user_id):
     con = get_db()
-
     cur = con.cursor()
 
     cur.execute(
@@ -871,6 +855,7 @@ def prepare_wardrobe_images(
                     ).decode("utf-8"),
                 }
             )
+
         except Exception:
             pass
 
@@ -905,11 +890,26 @@ def save_wardrobe_item(
         """,
         (
             user_id,
-            item.get("name", "Вещь"),
-            item.get("category", ""),
-            item.get("color", ""),
-            item.get("material", ""),
-            item.get("brand", ""),
+            item.get(
+                "name",
+                "Вещь",
+            ),
+            item.get(
+                "category",
+                "",
+            ),
+            item.get(
+                "color",
+                "",
+            ),
+            item.get(
+                "material",
+                "",
+            ),
+            item.get(
+                "brand",
+                "",
+            ),
             item.get(
                 "brand_confidence",
                 "",
@@ -1028,7 +1028,9 @@ def save_wardrobe_outfit(
     return outfit_id
 
 
-def get_saved_wardrobe_outfits(user_id):
+def get_saved_wardrobe_outfits(
+    user_id,
+):
     con = get_db()
 
     rows = con.execute(
@@ -1077,11 +1079,10 @@ def get_saved_outfit_images(saved):
 
         data = json.loads(raw)
 
-        return (
-            data
-            if isinstance(data, list)
-            else []
-        )
+        return data if isinstance(
+            data,
+            list,
+        ) else []
 
     except Exception:
         return []
@@ -1099,7 +1100,7 @@ def image_from_saved_data(
 
 
 # =========================================================
-# ВСПОМОГАТЕЛЬНЫЕ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================================================
 
 def image_to_data_url(
@@ -1109,14 +1110,9 @@ def image_to_data_url(
         uploaded_file.getvalue()
     ).decode("utf-8")
 
-    mime = (
-        uploaded_file.type
-        or "image/jpeg"
-    )
+    mime = uploaded_file.type or "image/jpeg"
 
-    return (
-        f"data:{mime};base64,{encoded}"
-    )
+    return f"data:{mime};base64,{encoded}"
 
 
 def extract_json(text):
@@ -1185,7 +1181,7 @@ def ai_error_message(error):
 
 
 # =========================================================
-# SESSION
+# SESSION STATE
 # =========================================================
 
 defaults = {
@@ -1207,12 +1203,28 @@ for key, value in defaults.items():
 
 
 # =========================================================
+# ВЫХОД ИЗ АККАУНТА
+# =========================================================
+
+def logout():
+    """
+    Полностью очищаем session_state.
+    После st.rerun() пользователь попадёт
+    на страницу входа.
+    """
+
+    st.session_state.clear()
+
+    st.rerun()
+
+
+# =========================================================
 # ЭКРАН ВХОДА / РЕГИСТРАЦИИ
 # =========================================================
 
 if not st.session_state.logged_in:
 
-    st.markdown(
+    render_html(
         """
         <div class="login-wrap">
             <div class="login-title">
@@ -1223,8 +1235,7 @@ if not st.session_state.logged_in:
                 Твой персональный AI-стилист
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     login_tab, register_tab = st.tabs(
@@ -1272,7 +1283,6 @@ if not st.session_state.logged_in:
                 st.rerun()
 
             else:
-
                 st.error(
                     "Неверный email или пароль."
                 )
@@ -1283,9 +1293,7 @@ if not st.session_state.logged_in:
 
     with register_tab:
 
-        with st.form(
-            "register_form"
-        ):
+        with st.form("register_form"):
 
             new_email = st.text_input(
                 "Email",
@@ -1335,7 +1343,6 @@ if not st.session_state.logged_in:
                     st.rerun()
 
                 else:
-
                     st.error(result)
 
     st.stop()
@@ -1357,16 +1364,20 @@ if not user:
 
 
 user_id = user["id"]
-balance = int(user["balance"])
+
+balance = int(
+    user["balance"]
+)
 
 
 # =========================================================
-# ШАПКА
+# ШАПКА САЙТА
 # =========================================================
 
-st.markdown(
+render_html(
     """
     <div class="hero">
+
         <div class="hero-title">
             👕 AI Stylist
         </div>
@@ -1375,9 +1386,9 @@ st.markdown(
             Собирай образы, анализируй стиль
             и управляй своим гардеробом
         </div>
+
     </div>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 
@@ -1387,48 +1398,65 @@ top_left, top_mid, top_right = st.columns(
 
 
 # ---------------------------------------------------------
-# EMAIL
+# EMAIL В ШАПКЕ
 # ---------------------------------------------------------
 
 with top_left:
 
-    safe_email = escape(
-        str(user["email"])
+    email_display = safe_html_text(
+        user["email"]
     )
 
-    st.markdown(
+    render_html(
         f"""
-        <div class="account-email">
-            👋 {safe_email}
+        <div style="
+            padding-top: 7px;
+            color: #555;
+            font-size: 14px;
+        ">
+            👋
+            <span class="account-email">
+                {email_display}
+            </span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
 # ---------------------------------------------------------
-# БАЛАНС
+# БАЛАНС В ШАПКЕ
 # ---------------------------------------------------------
 
 with top_mid:
 
-    st.caption(
-        f"💰 Баланс: **{balance} ₽**"
+    render_html(
+        f"""
+        <div style="
+            padding-top: 7px;
+            color: #555;
+            font-size: 14px;
+        ">
+            💰 Баланс:
+            <strong>
+                {balance} ₽
+            </strong>
+        </div>
+        """
     )
 
 
 # ---------------------------------------------------------
-# ВЫХОД
+# КНОПКА ВЫХОДА
 # ---------------------------------------------------------
 
 with top_right:
 
-    st.button(
+    if st.button(
         "Выйти",
         use_container_width=True,
-        key="header_logout",
-        on_click=logout,
-    )
+        key="header_logout_button",
+    ):
+        logout()
 
 
 # =========================================================
@@ -1451,16 +1479,13 @@ tab_analysis, tab_wardrobe, tab_account = st.tabs(
 with tab_analysis:
 
     st.markdown(
-        '<div class="section-title">'
-        '✨ Оценка образа'
-        '</div>',
+        '<div class="section-title">✨ Оценка образа</div>',
         unsafe_allow_html=True,
     )
 
     st.caption(
-        "Загрузи фото образа — AI разберёт "
-        "одежду, цвета, пропорции и "
-        "соответствие выбранному стилю."
+        "Загрузи фото образа — AI разберёт одежду, "
+        "цвета, пропорции и соответствие выбранному стилю."
     )
 
     st.subheader(
@@ -1480,13 +1505,9 @@ with tab_analysis:
                 use_container_width=True,
                 key=f"style_{i}",
             ):
-                st.session_state.selected_style = (
-                    style_name
-                )
+                st.session_state.selected_style = style_name
 
-    style = (
-        st.session_state.selected_style
-    )
+    style = st.session_state.selected_style
 
     st.info(
         f"🎨 Сейчас выбран стиль: **{style}**"
@@ -1511,8 +1532,9 @@ with tab_analysis:
         )
 
         free_available = (
-            int(user["free_analysis_used"])
-            == 0
+            int(
+                user["free_analysis_used"]
+            ) == 0
         )
 
         price_text = (
@@ -1524,10 +1546,13 @@ with tab_analysis:
             )
         )
 
-        st.markdown(
+        render_html(
             f"""
             <div class="card">
-                <b>✨ Анализ образа</b>
+
+                <b>
+                    ✨ Анализ образа
+                </b>
 
                 <div class="price">
                     {
@@ -1538,11 +1563,11 @@ with tab_analysis:
                 </div>
 
                 <div class="muted">
-                    {price_text}
+                    {safe_html_text(price_text)}
                 </div>
+
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
         if st.button(
@@ -1554,22 +1579,17 @@ with tab_analysis:
 
             if not free_available:
 
-                if (
-                    balance
-                    < PRICES["analysis"]
-                ):
+                if balance < PRICES["analysis"]:
 
                     st.error(
                         f"Недостаточно средств. "
-                        f"Нужно "
-                        f"{PRICES['analysis']} ₽."
+                        f"Нужно {PRICES['analysis']} ₽."
                     )
 
                     st.info(
-                        "Пополнение баланса "
-                        "можно подключить через "
-                        "платёжную систему "
-                        "после её настройки."
+                        "Пополнение баланса можно "
+                        "подключить через платёжную "
+                        "систему после её настройки."
                     )
 
                     st.stop()
@@ -1580,10 +1600,8 @@ with tab_analysis:
 
                 try:
 
-                    image_url = (
-                        image_to_data_url(
-                            uploaded_file
-                        )
+                    image_url = image_to_data_url(
+                        uploaded_file
                     )
 
                     prompt = f"""
@@ -1591,9 +1609,8 @@ with tab_analysis:
 
 Пользователь выбрал стиль: {style}
 
-Проанализируй одежду человека
-на фотографии с точки зрения
-соответствия стилю "{style}".
+Проанализируй одежду человека на фотографии
+с точки зрения соответствия стилю "{style}".
 
 Ответь на русском языке.
 
@@ -1619,38 +1636,33 @@ with tab_analysis:
 СОВЕТ:
 Короткий конкретный совет.
 
-Анализируй только одежду,
-цвета, вещи, обувь, аксессуары,
-сочетания, силуэт, пропорции
-и стиль.
+Анализируй только одежду, цвета, вещи, обувь,
+аксессуары, сочетания, силуэт, пропорции и стиль.
 
-Не оценивай лицо, тело,
-привлекательность или физические
-особенности человека.
+Не оценивай лицо, тело, привлекательность
+или физические особенности человека.
 """
 
-                    response = (
-                        client.chat.completions.create(
-                            model=MODEL,
-                            max_tokens=1600,
-                            messages=[
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "type": "text",
-                                            "text": prompt,
+                    response = client.chat.completions.create(
+                        model=MODEL,
+                        max_tokens=1600,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": prompt,
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": image_url
                                         },
-                                        {
-                                            "type": "image_url",
-                                            "image_url": {
-                                                "url": image_url
-                                            },
-                                        },
-                                    ],
-                                }
-                            ],
-                        )
+                                    },
+                                ],
+                            }
+                        ],
                     )
 
                     result = (
@@ -1688,22 +1700,10 @@ with tab_analysis:
                                 "Не удалось списать средства."
                             )
 
-                    st.session_state.analysis_result = (
-                        result
-                    )
-
-                    st.session_state.analysis_style = (
-                        style
-                    )
-
-                    st.session_state.improved_result = (
-                        None
-                    )
-
-                    st.session_state.current_analysis_id = (
-                        None
-                    )
-
+                    st.session_state.analysis_result = result
+                    st.session_state.analysis_style = style
+                    st.session_state.improved_result = None
+                    st.session_state.current_analysis_id = None
                     st.session_state.current_analysis_image = (
                         uploaded_file.getvalue()
                     )
@@ -1722,9 +1722,9 @@ with tab_analysis:
 
                     st.code(str(e))
 
-    # =====================================================
+    # -----------------------------------------------------
     # РЕЗУЛЬТАТ АНАЛИЗА
-    # =====================================================
+    # -----------------------------------------------------
 
     if st.session_state.analysis_result:
 
@@ -1735,18 +1735,15 @@ with tab_analysis:
         )
 
         st.info(
-            f"🎨 Стиль: **"
-            f"{st.session_state.analysis_style or style}"
-            f"**"
+            f"🎨 Стиль: "
+            f"**{st.session_state.analysis_style or style}**"
         )
 
         st.markdown(
             st.session_state.analysis_result
         )
 
-        if (
-            st.session_state.current_analysis_id
-        ):
+        if st.session_state.current_analysis_id:
 
             st.success(
                 "⭐ Анализ уже сохранён."
@@ -1779,21 +1776,17 @@ with tab_analysis:
 
                     else:
 
-                        saved_id = (
-                            save_analysis_to_db(
-                                user_id=user_id,
-                                style=analysis_style,
-                                analysis=(
-                                    st.session_state
-                                    .analysis_result
-                                ),
-                                image_bytes=(
-                                    st.session_state
-                                    .current_analysis_image
-                                ),
-                                image_name="outfit.jpg",
-                                image_type="image/jpeg",
-                            )
+                        saved_id = save_analysis_to_db(
+                            user_id=user_id,
+                            style=analysis_style,
+                            analysis=(
+                                st.session_state.analysis_result
+                            ),
+                            image_bytes=(
+                                st.session_state.current_analysis_image
+                            ),
+                            image_name="outfit.jpg",
+                            image_type="image/jpeg",
                         )
 
                         st.session_state.current_analysis_id = (
@@ -1820,22 +1813,24 @@ with tab_analysis:
             "✨ Улучшить образ"
         )
 
-        st.markdown(
+        render_html(
             f"""
             <div class="card">
-                <b>✨ Персональное улучшение</b>
+
+                <b>
+                    ✨ Персональное улучшение
+                </b>
 
                 <div class="price">
                     {PRICES['improve']} ₽
                 </div>
 
                 <div class="muted">
-                    AI составит конкретный
-                    план изменений.
+                    AI составит конкретный план изменений.
                 </div>
+
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
         if st.button(
@@ -1849,30 +1844,26 @@ with tab_analysis:
 
                 st.error(
                     f"Недостаточно средств. "
-                    f"Нужно "
-                    f"{PRICES['improve']} ₽."
+                    f"Нужно {PRICES['improve']} ₽."
                 )
 
             else:
 
                 with st.spinner(
-                    "AI разрабатывает "
-                    "улучшенную версию..."
+                    "AI разрабатывает улучшенную версию..."
                 ):
 
                     try:
 
                         analysis_style = (
-                            st.session_state
-                            .analysis_style
+                            st.session_state.analysis_style
                             or style
                         )
 
                         improve_prompt = f"""
 Ты — профессиональный AI-стилист.
 
-Стиль пользователя:
-{analysis_style}
+Стиль пользователя: {analysis_style}
 
 Анализ текущего образа:
 {st.session_state.analysis_result}
@@ -1897,8 +1888,7 @@ with tab_analysis:
 Какие цвета лучше использовать.
 
 📐 ПРОПОРЦИИ
-Как улучшить сочетание верха,
-низа и обуви.
+Как улучшить сочетание верха, низа и обуви.
 
 🔥 ГОТОВЫЙ ВАРИАНТ
 Опиши итоговый образ.
@@ -1906,24 +1896,18 @@ with tab_analysis:
 💡 ГЛАВНЫЙ СОВЕТ
 Один самый практичный совет.
 
-Не оценивай лицо, тело
-или привлекательность.
+Не оценивай лицо, тело или привлекательность.
 """
 
-                        response = (
-                            client
-                            .chat
-                            .completions
-                            .create(
-                                model=MODEL,
-                                max_tokens=1600,
-                                messages=[
-                                    {
-                                        "role": "user",
-                                        "content": improve_prompt,
-                                    }
-                                ],
-                            )
+                        response = client.chat.completions.create(
+                            model=MODEL,
+                            max_tokens=1600,
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": improve_prompt,
+                                }
+                            ],
                         )
 
                         improved = (
@@ -1952,13 +1936,11 @@ with tab_analysis:
                         )
 
                         if (
-                            st.session_state
-                            .current_analysis_id
+                            st.session_state.current_analysis_id
                         ):
 
                             update_analysis_improvement(
-                                st.session_state
-                                .current_analysis_id,
+                                st.session_state.current_analysis_id,
                                 user_id,
                                 improved,
                             )
@@ -1989,9 +1971,9 @@ with tab_analysis:
                 st.session_state.improved_result
             )
 
-    # =====================================================
+    # -----------------------------------------------------
     # СОХРАНЁННЫЕ АНАЛИЗЫ
-    # =====================================================
+    # -----------------------------------------------------
 
     st.divider()
 
@@ -1999,8 +1981,8 @@ with tab_analysis:
         "🗂️ Мои сохранённые анализы"
     )
 
-    saved_analyses = (
-        get_all_analyses(user_id)
+    saved_analyses = get_all_analyses(
+        user_id
     )
 
     if not saved_analyses:
@@ -2014,8 +1996,8 @@ with tab_analysis:
         for saved in saved_analyses:
 
             with st.expander(
-                f"👕 {saved['style']} "
-                f"• {saved['created_at']}"
+                f"👕 {saved['style']} • "
+                f"{saved['created_at']}"
             ):
 
                 if saved["image"]:
@@ -2033,9 +2015,7 @@ with tab_analysis:
                     saved["analysis"]
                 )
 
-                if saved[
-                    "improved_result"
-                ]:
+                if saved["improved_result"]:
 
                     st.divider()
 
@@ -2044,9 +2024,7 @@ with tab_analysis:
                     )
 
                     st.markdown(
-                        saved[
-                            "improved_result"
-                        ]
+                        saved["improved_result"]
                     )
 
                 if st.button(
@@ -2072,15 +2050,13 @@ with tab_analysis:
 with tab_wardrobe:
 
     st.markdown(
-        '<div class="section-title">'
-        '👗 Мой гардероб'
-        '</div>',
+        '<div class="section-title">👗 Мой гардероб</div>',
         unsafe_allow_html=True,
     )
 
     st.caption(
-        "Загружай вещи бесплатно. AI "
-        "распознает их и поможет собрать образы."
+        "Загружай вещи бесплатно. AI распознает их "
+        "и поможет собрать образы."
     )
 
     st.subheader(
@@ -2103,14 +2079,16 @@ with tab_wardrobe:
         if len(wardrobe_files) > 6:
 
             st.warning(
-                "Максимум 6 фотографий "
-                "за один анализ."
+                "Максимум 6 фотографий за один анализ."
             )
 
         else:
 
             cols = st.columns(
-                min(3, len(wardrobe_files))
+                min(
+                    3,
+                    len(wardrobe_files),
+                )
             )
 
             for i, file in enumerate(
@@ -2123,9 +2101,7 @@ with tab_wardrobe:
 
                     st.image(
                         file,
-                        caption=(
-                            f"Вещь №{i + 1}"
-                        ),
+                        caption=f"Вещь №{i + 1}",
                         width="stretch",
                     )
 
@@ -2138,14 +2114,16 @@ with tab_wardrobe:
                     user[
                         "free_wardrobe_outfit_used"
                     ]
-                )
-                == 0
+                ) == 0
             )
 
-            st.markdown(
+            render_html(
                 f"""
                 <div class="card">
-                    <b>✨ Собрать 3 образа</b>
+
+                    <b>
+                        ✨ Собрать 3 образа
+                    </b>
 
                     <div class="price">
                         {
@@ -2156,12 +2134,11 @@ with tab_wardrobe:
                     </div>
 
                     <div class="muted">
-                        Используются только
-                        загруженные вещи.
+                        Используются только загруженные вещи.
                     </div>
+
                 </div>
-                """,
-                unsafe_allow_html=True,
+                """
             )
 
             if st.button(
@@ -2192,18 +2169,15 @@ with tab_wardrobe:
                         try:
 
                             style = (
-                                st.session_state
-                                .selected_style
+                                st.session_state.selected_style
                             )
 
                             wardrobe_prompt = f"""
 Ты — профессиональный AI-стилист.
 
-Стиль пользователя:
-{style}
+Стиль пользователя: {style}
 
-Пользователь загрузил
-{len(wardrobe_files)} фотографий.
+Пользователь загрузил {len(wardrobe_files)} фотографий.
 
 Фото 1 = вещь 1.
 Фото 2 = вещь 2.
@@ -2221,14 +2195,12 @@ with tab_wardrobe:
 - описание.
 
 НИКОГДА НЕ ПРИДУМЫВАЙ БРЕНД.
-Если бренд не виден, напиши
-"Не удалось определить".
+Если бренд не виден, напиши "Не удалось определить".
 
 После анализа создай 3 разных образа.
 
 Используй ТОЛЬКО загруженные вещи.
-Не добавляй вещи, которых нет
-на фотографиях.
+Не добавляй вещи, которых нет на фотографиях.
 
 Верни ТОЛЬКО JSON.
 
@@ -2270,11 +2242,9 @@ with tab_wardrobe:
     "main_advice": "совет"
 }}
 
-Номера вещей должны соответствовать
-фотографиям.
+Номера вещей должны соответствовать фотографиям.
 
-Не анализируй лицо, тело
-или привлекательность.
+Не анализируй лицо, тело или привлекательность.
 """
 
                             content = [
@@ -2299,20 +2269,15 @@ with tab_wardrobe:
                                     }
                                 )
 
-                            response = (
-                                client
-                                .chat
-                                .completions
-                                .create(
-                                    model=MODEL,
-                                    max_tokens=3000,
-                                    messages=[
-                                        {
-                                            "role": "user",
-                                            "content": content,
-                                        }
-                                    ],
-                                )
+                            response = client.chat.completions.create(
+                                model=MODEL,
+                                max_tokens=3000,
+                                messages=[
+                                    {
+                                        "role": "user",
+                                        "content": content,
+                                    }
+                                ],
                             )
 
                             wardrobe_text = (
@@ -2332,6 +2297,7 @@ with tab_wardrobe:
                                 wardrobe_data,
                                 dict,
                             ):
+
                                 raise ValueError(
                                     "Неверный формат JSON."
                                 )
@@ -2341,6 +2307,7 @@ with tab_wardrobe:
                                 if not use_free_wardrobe_outfit(
                                     user_id
                                 ):
+
                                     raise RuntimeError(
                                         "Не удалось применить "
                                         "бесплатную попытку."
@@ -2353,12 +2320,11 @@ with tab_wardrobe:
                                     PRICES[
                                         "wardrobe_outfit"
                                     ],
-                                    "Сбор образов "
-                                    "из гардероба",
+                                    "Сбор образов из гардероба",
                                 ):
+
                                     raise RuntimeError(
-                                        "Не удалось "
-                                        "списать средства."
+                                        "Не удалось списать средства."
                                     )
 
                             st.session_state.wardrobe_data = (
@@ -2369,28 +2335,21 @@ with tab_wardrobe:
                                 wardrobe_files
                             )
 
-                            # Сохраняем вещи
-                            # в постоянный гардероб.
-                            for index, item in enumerate(
-                                wardrobe_data.get(
-                                    "items",
-                                    [],
-                                )
+                            # Сохраняем вещи.
+                            for item in wardrobe_data.get(
+                                "items",
+                                [],
                             ):
 
                                 number = safe_int(
-                                    item.get(
-                                        "number"
-                                    )
+                                    item.get("number")
                                 )
 
                                 if (
                                     number
                                     and 1
                                     <= number
-                                    <= len(
-                                        wardrobe_files
-                                    )
+                                    <= len(wardrobe_files)
                                 ):
 
                                     save_wardrobe_item(
@@ -2415,9 +2374,9 @@ with tab_wardrobe:
 
                             st.code(str(e))
 
-    # =====================================================
-    # AI-РЕЗУЛЬТАТ
-    # =====================================================
+    # -----------------------------------------------------
+    # AI РЕЗУЛЬТАТ
+    # -----------------------------------------------------
 
     if st.session_state.wardrobe_data:
 
@@ -2445,9 +2404,7 @@ with tab_wardrobe:
             )
 
             if number:
-                item_by_number[
-                    number
-                ] = item
+                item_by_number[number] = item
 
         if items:
 
@@ -2466,15 +2423,11 @@ with tab_wardrobe:
                 ]:
 
                     st.markdown(
-                        f"**"
-                        f"{item.get('name', 'Вещь')}"
-                        f"**"
+                        f"**{item.get('name', 'Вещь')}**"
                     )
 
                     st.caption(
-                        f"№"
-                        f"{item.get('number', '?')}"
-                        f" · "
+                        f"№{item.get('number', '?')} · "
                         f"{item.get('category', '—')}"
                     )
 
@@ -2528,10 +2481,7 @@ with tab_wardrobe:
                             number
                         )
 
-                        if (
-                            number
-                            in item_by_number
-                        ):
+                        if number in item_by_number:
 
                             selected_items.append(
                                 item_by_number[
@@ -2627,9 +2577,7 @@ with tab_wardrobe:
                                     "items",
                                     [],
                                 ),
-                                explanation=(
-                                    explanation
-                                ),
+                                explanation=explanation,
                                 wardrobe_files=(
                                     st.session_state
                                     .wardrobe_files
@@ -2643,8 +2591,7 @@ with tab_wardrobe:
                         except Exception as e:
 
                             st.error(
-                                "Не удалось "
-                                "сохранить образ."
+                                "Не удалось сохранить образ."
                             )
 
                             st.code(str(e))
@@ -2654,13 +2601,15 @@ with tab_wardrobe:
         ):
 
             st.info(
-                f"💡 Совет стилиста: "
-                f"{wardrobe_data['main_advice']}"
+                "💡 Совет стилиста: "
+                + wardrobe_data[
+                    "main_advice"
+                ]
             )
 
-    # =====================================================
+    # -----------------------------------------------------
     # ПОСТОЯННЫЙ ГАРДЕРОБ
-    # =====================================================
+    # -----------------------------------------------------
 
     st.divider()
 
@@ -2668,8 +2617,8 @@ with tab_wardrobe:
         "🧥 Мои вещи"
     )
 
-    persistent_items = (
-        get_wardrobe_items(user_id)
+    persistent_items = get_wardrobe_items(
+        user_id
     )
 
     if not persistent_items:
@@ -2697,9 +2646,7 @@ with tab_wardrobe:
                 )
 
                 st.markdown(
-                    f"**"
-                    f"{item['name'] or 'Вещь'}"
-                    f"**"
+                    f"**{item['name'] or 'Вещь'}**"
                 )
 
                 st.caption(
@@ -2728,9 +2675,9 @@ with tab_wardrobe:
 
                     st.rerun()
 
-    # =====================================================
+    # -----------------------------------------------------
     # СОХРАНЁННЫЕ ОБРАЗЫ
-    # =====================================================
+    # -----------------------------------------------------
 
     st.divider()
 
@@ -2755,8 +2702,8 @@ with tab_wardrobe:
         for saved in saved_wardrobe:
 
             with st.expander(
-                f"⭐ {saved['name']} "
-                f"• {saved['created_at']}"
+                f"⭐ {saved['name']} • "
+                f"{saved['created_at']}"
             ):
 
                 st.caption(
@@ -2858,15 +2805,34 @@ with tab_wardrobe:
 with tab_account:
 
     st.markdown(
-        '<div class="section-title">'
-        '👤 Мой аккаунт'
-        '</div>',
+        '<div class="section-title">👤 Мой аккаунт</div>',
         unsafe_allow_html=True,
     )
 
-    st.write(
-        f"Добро пожаловать, "
-        f"**{user['email']}** 👋"
+    # -----------------------------------------------------
+    # EMAIL — НЕ КЛИКАБЕЛЬНЫЙ
+    # -----------------------------------------------------
+
+    email_display = safe_html_text(
+        user["email"]
+    )
+
+    render_html(
+        f"""
+        <div style="
+            margin-top: 10px;
+            margin-bottom: 20px;
+            font-size: 16px;
+        ">
+
+            Добро пожаловать,
+            <span class="account-email">
+                {email_display}
+            </span>
+            👋
+
+        </div>
+        """
     )
 
     current_balance = get_balance(
@@ -2875,11 +2841,16 @@ with tab_account:
 
     col1, col2 = st.columns(2)
 
+    # -----------------------------------------------------
+    # БАЛАНС
+    # -----------------------------------------------------
+
     with col1:
 
-      st.markdown(
+        render_html(
             f"""
             <div class="card">
+
                 <div class="muted">
                     💰 Баланс
                 </div>
@@ -2887,10 +2858,14 @@ with tab_account:
                 <div class="balance">
                     {current_balance} ₽
                 </div>
+
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
+
+    # -----------------------------------------------------
+    # БЕСПЛАТНЫЕ ПОПЫТКИ
+    # -----------------------------------------------------
 
     with col2:
 
@@ -2899,8 +2874,7 @@ with tab_account:
                 user[
                     "free_analysis_used"
                 ]
-            )
-            == 0
+            ) == 0
         )
 
         free_wardrobe = (
@@ -2908,30 +2882,51 @@ with tab_account:
                 user[
                     "free_wardrobe_outfit_used"
                 ]
-            )
-            == 0
+            ) == 0
         )
 
-        st.markdown(
+        analysis_icon = (
+            "🟢"
+            if free_analysis
+            else "⚪"
+        )
+
+        wardrobe_icon = (
+            "🟢"
+            if free_wardrobe
+            else "⚪"
+        )
+
+        render_html(
             f"""
             <div class="card">
-                <b>🎁 Бесплатные попытки</b>
-                <br><br>
 
-                {"🟢" if free_analysis else "⚪"}
-                Оценка образа
-                <br>
+                <b>
+                    🎁 Бесплатные попытки
+                </b>
 
-                {
-                    "🟢"
-                    if free_wardrobe
-                    else "⚪"
-                }
-                Сбор образа из гардероба
+                <div style="
+                    margin-top: 14px;
+                 line-height: 1.9;
+                ">
+
+                    {analysis_icon}
+                    Оценка образа
+
+                    <br>
+
+                    {wardrobe_icon}
+                    Сбор образа из гардероба
+
+                </div>
+
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
+
+    # -----------------------------------------------------
+    # ЦЕНЫ
+    # -----------------------------------------------------
 
     st.subheader(
         "💳 Цены"
@@ -2939,62 +2934,78 @@ with tab_account:
 
     price_cols = st.columns(3)
 
+    # Оценка
     with price_cols[0]:
 
-        st.markdown(
+        render_html(
             f"""
             <div class="card">
-                <b>✨ Оценка</b>
+
+                <b>
+                    ✨ Оценка
+                </b>
 
                 <div class="price">
-                    20 ₽
+                    {PRICES['analysis']} ₽
                 </div>
 
                 <div class="muted">
                     после первой бесплатной
                 </div>
+
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
+    # Улучшение
     with price_cols[1]:
 
-        st.markdown(
+        render_html(
             f"""
             <div class="card">
-                <b>✨ Улучшение</b>
+
+                <b>
+                    ✨ Улучшение
+                </b>
 
                 <div class="price">
-                    10 ₽
+                    {PRICES['improve']} ₽
                 </div>
 
                 <div class="muted">
                     за один результат
                 </div>
+
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
+    # Гардероб
     with price_cols[2]:
 
-        st.markdown(
+        render_html(
             f"""
             <div class="card">
-                <b>👗 Образ из гардероба</b>
+
+                <b>
+                    👗 Образ из гардероба
+                </b>
 
                 <div class="price">
-                    50 ₽
+                    {PRICES['wardrobe_outfit']} ₽
                 </div>
 
                 <div class="muted">
                     после первой бесплатной
                 </div>
+
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
+
+    # -----------------------------------------------------
+    # ПОПОЛНЕНИЕ
+    # -----------------------------------------------------
 
     st.subheader(
         "➕ Пополнение баланса"
@@ -3008,6 +3019,10 @@ with tab_account:
     )
 
     st.divider()
+
+    # -----------------------------------------------------
+    # ИСТОРИЯ
+    # -----------------------------------------------------
 
     st.subheader(
         "📋 История операций"
@@ -3045,16 +3060,16 @@ with tab_account:
 
     st.divider()
 
-    # =====================================================
-    # ИСПРАВЛЕННАЯ КНОПКА ВЫХОДА
-    # =====================================================
+    # -----------------------------------------------------
+    # ВЫХОД
+    # -----------------------------------------------------
 
-    st.button(
+    if st.button(
         "🚪 Выйти из аккаунта",
         use_container_width=True,
-        key="account_logout",
-        on_click=logout,
-    )
+        key="account_logout_button",
+    ):
+        logout()
 
 
 # =========================================================
@@ -3065,6 +3080,5 @@ st.divider()
 
 st.caption(
     "👕 AI Stylist • AI-анализ одежды • "
-    "Персональный гардероб • "
-    "Постоянное хранение данных"
+    "Персональный гардероб • Постоянное хранение данных"
 )
