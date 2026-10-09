@@ -1,21 +1,21 @@
 import os
+import io
 import json
 import base64
-import re
-import sqlite3
 import hashlib
 import secrets
+import sqlite3
 from datetime import datetime
 from html import escape
 
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+from PIL import Image
 
-
-# =========================================================
-# НАСТРОЙКИ
-# =========================================================
+# =====================================================
+# CONFIG
+# =====================================================
 
 load_dotenv()
 
@@ -26,17 +26,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+DATA_DIR = os.getenv("DATA_DIR", "./data")
 os.makedirs(DATA_DIR, exist_ok=True)
-
 DB_FILE = os.path.join(DATA_DIR, "ai_stylist.db")
 
-MODEL = "gpt-5.6-sol"
-
+MODEL = os.getenv("AI_MODEL", "gpt-5.6-sol")
 PRICES = {
     "analysis": 20,
     "improve": 10,
-    "wardrobe_outfit": 50,
+    "outfit": 50,
 }
 
 STYLES = [
@@ -47,39 +45,28 @@ STYLES = [
     "Minimalism",
 ]
 
-
-# =========================================================
-# API
-# =========================================================
-
 api_key = os.getenv("AITUNNEL_API_KEY")
+client = None
 
-if not api_key:
-    st.error("❌ API-ключ AITUNNEL_API_KEY не найден.")
-    st.info(
-        "Добавь AITUNNEL_API_KEY в Environment Variables "
-        "в Coolify и сделай Redeploy."
+if api_key:
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.aitunnel.ru/v1",
+        timeout=180,
+        max_retries=2,
     )
-    st.stop()
 
-client = OpenAI(
-    api_key=api_key,
-    base_url="https://api.aitunnel.ru/v1",
-    timeout=600.0,
-    max_retries=2,
-)
-
-
-# =========================================================
-# CSS
-# =========================================================
+# =====================================================
+# STYLE
+# No HTML line-break tags are used in page content.
+# =====================================================
 
 st.markdown(
     """
     <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+    #MainMenu {visibility:hidden;}
+    footer {visibility:hidden;}
+    header {visibility:hidden;}
 
     .block-container {
         max-width: 1180px;
@@ -88,269 +75,162 @@ st.markdown(
     }
 
     .hero {
-        padding: 28px 30px;
-        border-radius: 28px;
-        background: linear-gradient(
-            135deg,
-            rgba(245,245,245,.98),
-            rgba(255,255,255,.98)
-        );
-        border: 1px solid rgba(0,0,0,.07);
-        margin-bottom: 22px;
+        padding: 28px;
+        border-radius: 24px;
+        background: linear-gradient(135deg,#f4f4f4,#ffffff);
+        border: 1px solid #e8e8e8;
+        margin-bottom: 20px;
     }
 
     .hero-title {
-        font-size: 42px;
+        font-size: 38px;
         font-weight: 850;
-        letter-spacing: -1.5px;
-        margin: 0;
+        letter-spacing: -1px;
     }
 
-    .hero-subtitle {
-        color: #777;
-        font-size: 17px;
-        margin-top: 6px;
-    }
-
-    .card {
-        padding: 22px;
-        border-radius: 22px;
-        border: 1px solid rgba(0,0,0,.08);
-        background: rgba(255,255,255,.75);
-        margin-bottom: 16px;
-    }
-
-    .price {
-        font-size: 25px;
-        font-weight: 800;
-        margin: 6px 0;
-    }
-
-    .muted {
-        color: #777;
-    }
-
-    .balance {
-        font-size: 34px;
-        font-weight: 850;
-        margin-top: 3px;
-    }
-
-    .login-wrap {
-        max-width: 560px;
-        margin: 55px auto;
-    }
-
-    .login-title {
-        text-align: center;
-        font-size: 44px;
-        font-weight: 850;
-        letter-spacing: -1.5px;
-    }
-
-    .login-subtitle {
-        text-align: center;
-        color: #777;
-        margin-bottom: 28px;
-    }
-
-    div[data-testid="stTabs"] button {
-        font-size: 16px;
-        font-weight: 700;
-    }
-
-    .section-title {
-        font-size: 30px;
-        font-weight: 820;
-        margin-top: 5px;
-    }
-
-    /* =====================================================
-       EMAIL В ШАПКЕ — НЕ КЛИКАБЕЛЬНЫЙ
-       ===================================================== */
-
-    .account-email {
-        color: #777;
-        font-size: 14px;
-        cursor: default !important;
-        pointer-events: none !important;
-        user-select: none !important;
-        -webkit-user-select: none !important;
-        text-decoration: none !important;
-    }
-
-    .account-email a {
-        color: inherit !important;
-        text-decoration: none !important;
-        pointer-events: none !important;
-        cursor: default !important;
-    }
-
-    /* =====================================================
-       КНОПКА ВЫХОДА
-       ===================================================== */
-
-    .logout-button {
-        width: 100%;
-    }
+    .muted {color:#777;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-
-# =========================================================
+# =====================================================
 # DATABASE
-# =========================================================
+# =====================================================
 
 def get_db():
-    con = sqlite3.connect(DB_FILE, check_same_thread=False)
+    con = sqlite3.connect(DB_FILE, timeout=30)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
     return con
 
 
-def column_exists(con, table, column):
-    rows = con.execute(
-        f"PRAGMA table_info({table})"
-    ).fetchall()
-
-    return any(
-        row["name"] == column
-        for row in rows
-    )
-
-
 def init_database():
-    con = get_db()
-    cur = con.cursor()
-
-    cur.execute(
-        """
+    with get_db() as con:
+        con.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             balance INTEGER NOT NULL DEFAULT 0,
             free_analysis_used INTEGER NOT NULL DEFAULT 0,
-            free_wardrobe_outfit_used INTEGER NOT NULL DEFAULT 0,
+            free_outfit_used INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
-        )
-        """
-    )
+        );
 
-    cur.execute(
-        """
+        CREATE TABLE IF NOT EXISTS wardrobe_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT DEFAULT '',
+            color TEXT DEFAULT '',
+            material TEXT DEFAULT '',
+            brand TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            image BLOB NOT NULL,
+            image_name TEXT DEFAULT '',
+            image_type TEXT DEFAULT 'image/jpeg',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+                ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS outfit_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            style TEXT NOT NULL,
+            analysis TEXT NOT NULL,
+            improved_result TEXT DEFAULT '',
+            image BLOB,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+                ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS saved_outfits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            style TEXT DEFAULT '',
+            items_json TEXT DEFAULT '[]',
+            explanation TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+                ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             amount INTEGER NOT NULL,
             description TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+                ON DELETE CASCADE
+        );
+        """)
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS outfit_analyses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            style TEXT NOT NULL,
-            analysis TEXT NOT NULL,
-            improved_result TEXT,
-            image BLOB,
-            image_name TEXT,
-            image_type TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS saved_outfits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            style TEXT,
-            items_json TEXT,
-            explanation TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS wardrobe_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            name TEXT,
-            category TEXT,
-            color TEXT,
-            material TEXT,
-            brand TEXT,
-            brand_confidence TEXT,
-            description TEXT,
-            image BLOB NOT NULL,
-            image_name TEXT,
-            image_type TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    # -----------------------------------------------------
-    # Миграция старой базы
-    # -----------------------------------------------------
-
-    for table in (
-        "outfit_analyses",
-        "saved_outfits",
-    ):
-        if not column_exists(
-            con,
-            table,
-            "user_id",
-        ):
-            cur.execute(
-                f"""
-                ALTER TABLE {table}
-                ADD COLUMN user_id INTEGER
-                """
+        # Safe migrations for databases from the older version.
+        columns = {
+            r["name"]
+            for r in con.execute(
+                "PRAGMA table_info(outfit_analyses)"
+            ).fetchall()
+        }
+        if "user_id" not in columns:
+            con.execute(
+                "ALTER TABLE outfit_analyses ADD COLUMN user_id INTEGER"
+            )
+        if "improved_result" not in columns:
+            con.execute(
+                "ALTER TABLE outfit_analyses "
+                "ADD COLUMN improved_result TEXT DEFAULT ''"
+            )
+        if "image" not in columns:
+            con.execute(
+                "ALTER TABLE outfit_analyses ADD COLUMN image BLOB"
             )
 
-    if not column_exists(
-        con,
-        "saved_outfits",
-        "images_json",
-    ):
-        cur.execute(
-            """
-            ALTER TABLE saved_outfits
-            ADD COLUMN images_json TEXT
-            """
-        )
-
-    con.commit()
-    con.close()
+        columns = {
+            r["name"]
+            for r in con.execute(
+                "PRAGMA table_info(saved_outfits)"
+            ).fetchall()
+        }
+        if "user_id" not in columns:
+            con.execute(
+                "ALTER TABLE saved_outfits ADD COLUMN user_id INTEGER"
+            )
+        if "items_json" not in columns:
+            con.execute(
+                "ALTER TABLE saved_outfits "
+                "ADD COLUMN items_json TEXT DEFAULT '[]'"
+            )
+        if "explanation" not in columns:
+            con.execute(
+                "ALTER TABLE saved_outfits "
+                "ADD COLUMN explanation TEXT DEFAULT ''"
+            )
 
 
 init_database()
 
+# =====================================================
+# HELPERS
+# =====================================================
 
-# =========================================================
-# ПАРОЛИ
-# =========================================================
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 def hash_password(password):
     salt = secrets.token_bytes(16)
-
     digest = hashlib.pbkdf2_hmac(
         "sha256",
-        password.encode("utf-8"),
+        password.encode(),
         salt,
         180_000,
     )
-
     return (
         "pbkdf2_sha256$180000$"
         + base64.b64encode(salt).decode()
@@ -361,2710 +241,879 @@ def hash_password(password):
 
 def verify_password(password, stored):
     try:
-        algorithm, iterations, salt_b64, digest_b64 = (
-            stored.split("$")
-        )
-
+        algorithm, iterations, salt, digest = stored.split("$")
         if algorithm != "pbkdf2_sha256":
             return False
-
-        salt = base64.b64decode(salt_b64)
-        expected = base64.b64decode(digest_b64)
-
         actual = hashlib.pbkdf2_hmac(
             "sha256",
-            password.encode("utf-8"),
-            salt,
+            password.encode(),
+            base64.b64decode(salt),
             int(iterations),
         )
-
         return secrets.compare_digest(
             actual,
-            expected,
+            base64.b64decode(digest),
         )
-
-    except Exception:
+    except (ValueError, TypeError):
         return False
 
 
-# =========================================================
-# ПОЛЬЗОВАТЕЛИ
-# =========================================================
-
-def create_user(email, password):
-    email = email.strip().lower()
-
-    if len(email) < 3 or "@" not in email:
-        return False, "Введите корректный email."
-
-    if len(password) < 8:
-        return False, "Пароль должен содержать минимум 8 символов."
-
-    con = get_db()
-
-    try:
-        cur = con.cursor()
-
-        cur.execute(
-            """
-            INSERT INTO users
-            (email, password_hash, created_at)
-            VALUES (?, ?, ?)
-            """,
-            (
-                email,
-                hash_password(password),
-                datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-            ),
-        )
-
-        user_id = cur.lastrowid
-
-        # Старые записи без user_id принадлежат
-        # первому созданному пользователю.
-        cur.execute(
-            """
-            UPDATE outfit_analyses
-            SET user_id=?
-            WHERE user_id IS NULL
-            """,
-            (user_id,),
-        )
-
-        cur.execute(
-            """
-            UPDATE saved_outfits
-            SET user_id=?
-            WHERE user_id IS NULL
-            """,
-            (user_id,),
-        )
-
-        con.commit()
-
-        return True, user_id
-
-    except sqlite3.IntegrityError:
-        return False, "Этот email уже зарегистрирован."
-
-    finally:
-        con.close()
-
-
-def authenticate(email, password):
-    con = get_db()
-
-    row = con.execute(
-        """
-        SELECT *
-        FROM users
-        WHERE email=?
-        """,
-        (email.strip().lower(),),
-    ).fetchone()
-
-    con.close()
-
-    if not row:
-        return None
-
-    if not verify_password(
-        password,
-        row["password_hash"],
-    ):
-        return None
-
-    return row
-
-
 def get_user(user_id):
-    con = get_db()
-
-    row = con.execute(
-        """
-        SELECT *
-        FROM users
-        WHERE id=?
-        """,
-        (user_id,),
-    ).fetchone()
-
-    con.close()
-
-    return row
-
-
-# =========================================================
-# ВЫХОД ИЗ АККАУНТА
-# =========================================================
-
-def logout():
-    """
-    Полностью очищает текущую сессию.
-
-    Важно:
-    функция НЕ вызывает st.rerun().
-    Она используется как callback кнопки.
-    Streamlit автоматически перезапустит страницу
-    после выполнения callback.
-    """
-
-    st.session_state.clear()
-
-
-# =========================================================
-# БАЛАНС И ОПЕРАЦИИ
-# =========================================================
-
-def get_balance(user_id):
-    user = get_user(user_id)
-
-    if not user:
-        return 0
-
-    return int(user["balance"])
-
-
-def add_transaction(
-    user_id,
-    amount,
-    description,
-):
-    con = get_db()
-
-    con.execute(
-        """
-        INSERT INTO transactions
-        (user_id, amount, description, created_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            amount,
-            description,
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-        ),
-    )
-
-    con.commit()
-    con.close()
-
-
-def charge_user(
-    user_id,
-    amount,
-    description,
-):
-    """
-    Безопасное списание внутри одной
-    SQLite-транзакции.
-    """
-
-    con = get_db()
-
-    try:
-        cur = con.cursor()
-
-        cur.execute("BEGIN IMMEDIATE")
-
-        user = cur.execute(
-            """
-            SELECT balance
-            FROM users
-            WHERE id=?
-            """,
+    with get_db() as con:
+        return con.execute(
+            "SELECT * FROM users WHERE id=?",
             (user_id,),
         ).fetchone()
 
-        if (
-            not user
-            or int(user["balance"]) < amount
-        ):
-            con.rollback()
-            return False
 
-        cur.execute(
-            """
-            UPDATE users
-            SET balance=balance-?
-            WHERE id=?
-            """,
-            (
-                amount,
-                user_id,
-            ),
+def register_user(email, password):
+    email = email.strip().lower()
+
+    if "@" not in email or len(email) < 3:
+        return False, "Введите корректный email."
+    if len(password) < 8:
+        return False, "Пароль должен содержать минимум 8 символов."
+
+    try:
+        with get_db() as con:
+            cur = con.execute(
+                """
+                INSERT INTO users
+                (email, password_hash, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (email, hash_password(password), now()),
+            )
+            return True, cur.lastrowid
+    except sqlite3.IntegrityError:
+        return False, "Этот email уже зарегистрирован."
+
+
+def authenticate(email, password):
+    with get_db() as con:
+        user = con.execute(
+            "SELECT * FROM users WHERE email=?",
+            (email.strip().lower(),),
+        ).fetchone()
+
+    if user and verify_password(password, user["password_hash"]):
+        return user
+    return None
+
+
+def image_bytes(uploaded_file):
+    """Normalize uploaded photos to JPEG to reduce storage size."""
+    img = Image.open(uploaded_file).convert("RGB")
+    img.thumbnail((1600, 1600))
+    output = io.BytesIO()
+    img.save(output, format="JPEG", quality=88, optimize=True)
+    return output.getvalue()
+
+
+def image_data_url(data):
+    encoded = base64.b64encode(data).decode("utf-8")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def call_ai(messages, max_tokens=2000):
+    if client is None:
+        raise RuntimeError(
+            "Не найден AITUNNEL_API_KEY. "
+            "Добавь ключ в переменные окружения и перезапусти приложение."
         )
 
-        cur.execute(
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
+    result = response.choices[0].message.content
+
+    if not result:
+        raise RuntimeError("AI вернул пустой ответ.")
+
+    return result
+
+
+def parse_json(text):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        if text.endswith("```"):
+            text = text[:-3]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start:end + 1])
+        raise ValueError("AI вернул ответ в неправильном формате JSON.")
+
+
+# =====================================================
+# WARDROBE DATABASE OPERATIONS
+# =====================================================
+
+def get_wardrobe_items(user_id):
+    with get_db() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM wardrobe_items
+            WHERE user_id=?
+            ORDER BY id DESC
+            """,
+            (user_id,),
+        ).fetchall()
+
+
+def add_wardrobe_item(
+    user_id,
+    name,
+    category,
+    color,
+    material,
+    brand,
+    description,
+    photo,
+    photo_name="photo.jpg",
+):
+    with get_db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO wardrobe_items (
+                user_id, name, category, color, material,
+                brand, description, image, image_name,
+                image_type, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                name.strip() or "Вещь",
+                category,
+                color,
+                material,
+                brand,
+                description,
+                sqlite3.Binary(photo),
+                photo_name,
+                "image/jpeg",
+                now(),
+            ),
+        )
+        return cur.lastrowid
+
+
+def delete_wardrobe_item(item_id, user_id):
+    with get_db() as con:
+        cur = con.execute(
+            "DELETE FROM wardrobe_items WHERE id=? AND user_id=?",
+            (item_id, user_id),
+        )
+        return cur.rowcount == 1
+
+
+def save_outfit(user_id, name, style, items, explanation):
+    with get_db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO saved_outfits
+            (user_id, name, style, items_json, explanation, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                name,
+                style,
+                json.dumps(items, ensure_ascii=False),
+                explanation,
+                now(),
+            ),
+        )
+        return cur.lastrowid
+
+
+def get_saved_outfits(user_id):
+    with get_db() as con:
+        return con.execute(
+            "SELECT * FROM saved_outfits WHERE user_id=? ORDER BY id DESC",
+            (user_id,),
+        ).fetchall()
+
+
+def delete_saved_outfit(outfit_id, user_id):
+    with get_db() as con:
+        con.execute(
+            "DELETE FROM saved_outfits WHERE id=? AND user_id=?",
+            (outfit_id, user_id),
+        )
+
+
+def get_analyses(user_id):
+    with get_db() as con:
+        return con.execute(
+            "SELECT * FROM outfit_analyses WHERE user_id=? ORDER BY id DESC",
+            (user_id,),
+        ).fetchall()
+
+
+def save_analysis(user_id, style, result, photo):
+    with get_db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO outfit_analyses
+            (user_id, style, analysis, image, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                style,
+                result,
+                sqlite3.Binary(photo) if photo else None,
+                now(),
+            ),
+        )
+        return cur.lastrowid
+
+
+def delete_analysis(analysis_id, user_id):
+    with get_db() as con:
+        con.execute(
+            "DELETE FROM outfit_analyses WHERE id=? AND user_id=?",
+            (analysis_id, user_id),
+        )
+
+
+def charge_user(user_id, amount, description):
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        user = con.execute(
+            "SELECT balance FROM users WHERE id=?",
+            (user_id,),
+        ).fetchone()
+
+        if not user or user["balance"] < amount:
+            return False
+
+        con.execute(
+            "UPDATE users SET balance=balance-? WHERE id=?",
+            (amount, user_id),
+        )
+        con.execute(
             """
             INSERT INTO transactions
             (user_id, amount, description, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (
-                user_id,
-                -amount,
-                description,
-                datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-            ),
+            (user_id, -amount, description, now()),
         )
-
-        con.commit()
-
         return True
 
-    except Exception:
-        con.rollback()
-        return False
 
-    finally:
-        con.close()
+def use_free_attempt(user_id, column):
+    # column is chosen only from this fixed allowlist.
+    if column not in ("free_analysis_used", "free_outfit_used"):
+        raise ValueError("Invalid free-attempt field.")
 
-
-def use_free_analysis(user_id):
-    con = get_db()
-
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        UPDATE users
-        SET free_analysis_used=1
-        WHERE id=?
-        AND free_analysis_used=0
-        """,
-        (user_id,),
-    )
-
-    changed = cur.rowcount == 1
-
-    con.commit()
-    con.close()
-
-    return changed
-
-
-def use_free_wardrobe_outfit(user_id):
-    con = get_db()
-
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        UPDATE users
-        SET free_wardrobe_outfit_used=1
-        WHERE id=?
-        AND free_wardrobe_outfit_used=0
-        """,
-        (user_id,),
-    )
-
-    changed = cur.rowcount == 1
-
-    con.commit()
-    con.close()
-
-    return changed
-
-
-def get_transactions(user_id):
-    con = get_db()
-
-    rows = con.execute(
-        """
-        SELECT *
-        FROM transactions
-        WHERE user_id=?
-        ORDER BY id DESC
-        LIMIT 50
-        """,
-        (user_id,),
-    ).fetchall()
-
-    con.close()
-
-    return rows
-
-
-# =========================================================
-# АНАЛИЗЫ
-# =========================================================
-
-def save_analysis_to_db(
-    user_id,
-    style,
-    analysis,
-    image_bytes=None,
-    image_name=None,
-    image_type=None,
-):
-    con = get_db()
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO outfit_analyses
-        (
-            user_id,
-            style,
-            analysis,
-            improved_result,
-            image,
-            image_name,
-            image_type,
-            created_at
+    with get_db() as con:
+        cur = con.execute(
+            f"UPDATE users SET {column}=1 WHERE id=? AND {column}=0",
+            (user_id,),
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            style,
-            analysis,
-            None,
-            image_bytes,
-            image_name,
-            image_type,
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-        ),
-    )
+        return cur.rowcount == 1
 
-    con.commit()
 
-    analysis_id = cur.lastrowid
-
-    con.close()
-
-    return analysis_id
-
-
-def update_analysis_improvement(
-    analysis_id,
-    user_id,
-    improved_result,
-):
-    con = get_db()
-
-    con.execute(
-        """
-        UPDATE outfit_analyses
-        SET improved_result=?
-        WHERE id=?
-        AND user_id=?
-        """,
-        (
-            improved_result,
-            analysis_id,
-            user_id,
-        ),
-    )
-
-    con.commit()
-    con.close()
-
-
-def get_all_analyses(user_id):
-    con = get_db()
-
-    rows = con.execute(
-        """
-        SELECT *
-        FROM outfit_analyses
-        WHERE user_id=?
-        ORDER BY id DESC
-        """,
-        (user_id,),
-    ).fetchall()
-
-    con.close()
-
-    return rows
-
-
-def delete_analysis(
-    analysis_id,
-    user_id,
-):
-    con = get_db()
-
-    con.execute(
-        """
-        DELETE FROM outfit_analyses
-        WHERE id=?
-        AND user_id=?
-        """,
-        (
-            analysis_id,
-            user_id,
-        ),
-    )
-
-    con.commit()
-    con.close()
-
-
-def analysis_exists(
-    user_id,
-    style,
-    analysis,
-):
-    con = get_db()
-
-    row = con.execute(
-        """
-        SELECT id
-        FROM outfit_analyses
-        WHERE user_id=?
-        AND style=?
-        AND analysis=?
-        LIMIT 1
-        """,
-        (
-            user_id,
-            style,
-            analysis,
-        ),
-    ).fetchone()
-
-    con.close()
-
-    return row is not None
-
-
-# =========================================================
-# ГАРДЕРОБ
-# =========================================================
-
-def prepare_wardrobe_images(
-    wardrobe_files,
-):
-    images = []
-
-    if not wardrobe_files:
-        return images
-
-    for number, file in enumerate(
-        wardrobe_files,
-        start=1,
-    ):
-        try:
-            images.append(
-                {
-                    "number": number,
-                    "name": (
-                        file.name
-                        or f"item_{number}.jpg"
-                    ),
-                    "type": (
-                        file.type
-                        or "image/jpeg"
-                    ),
-                    "data": base64.b64encode(
-                        file.getvalue()
-                    ).decode("utf-8"),
-                }
-            )
-        except Exception:
-            pass
-
-    return images
-
-
-def save_wardrobe_item(
-    user_id,
-    item,
-    file,
-):
-    con = get_db()
-
-    con.execute(
-        """
-        INSERT INTO wardrobe_items
-        (
-            user_id,
-            name,
-            category,
-            color,
-            material,
-            brand,
-            brand_confidence,
-            description,
-            image,
-            image_name,
-            image_type,
-            created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            item.get("name", "Вещь"),
-            item.get("category", ""),
-            item.get("color", ""),
-            item.get("material", ""),
-            item.get("brand", ""),
-            item.get(
-                "brand_confidence",
-                "",
-            ),
-            item.get(
-                "description",
-                "",
-            ),
-            file.getvalue(),
-            file.name,
-            file.type or "image/jpeg",
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-        ),
-    )
-
-    con.commit()
-    con.close()
-
-
-def get_wardrobe_items(user_id):
-    con = get_db()
-
-    rows = con.execute(
-        """
-        SELECT *
-        FROM wardrobe_items
-        WHERE user_id=?
-        ORDER BY id DESC
-        """,
-        (user_id,),
-    ).fetchall()
-
-    con.close()
-
-    return rows
-
-
-def delete_wardrobe_item(
-    item_id,
-    user_id,
-):
-    con = get_db()
-
-    con.execute(
-        """
-        DELETE FROM wardrobe_items
-        WHERE id=?
-        AND user_id=?
-        """,
-        (
-            item_id,
-            user_id,
-        ),
-    )
-
-    con.commit()
-    con.close()
-
-
-def save_wardrobe_outfit(
-    user_id,
-    name,
-    style,
-    items,
-    explanation,
-    wardrobe_files=None,
-):
-    images = prepare_wardrobe_images(
-        wardrobe_files
-    )
-
-    con = get_db()
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO saved_outfits
-        (
-            user_id,
-            name,
-            style,
-            items_json,
-            explanation,
-            created_at,
-            images_json
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            name,
-            style,
-            json.dumps(
-                items,
-                ensure_ascii=False,
-            ),
-            explanation,
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-            json.dumps(
-                images,
-                ensure_ascii=False,
-            ),
-        ),
-    )
-
-    con.commit()
-
-    outfit_id = cur.lastrowid
-
-    con.close()
-
-    return outfit_id
-
-
-def get_saved_wardrobe_outfits(user_id):
-    con = get_db()
-
-    rows = con.execute(
-        """
-        SELECT *
-        FROM saved_outfits
-        WHERE user_id=?
-        ORDER BY id DESC
-        """,
-        (user_id,),
-    ).fetchall()
-
-    con.close()
-
-    return rows
-
-
-def delete_saved_wardrobe_outfit(
-    outfit_id,
-    user_id,
-):
-    con = get_db()
-
-    con.execute(
-        """
-        DELETE FROM saved_outfits
-        WHERE id=?
-        AND user_id=?
-        """,
-        (
-            outfit_id,
-            user_id,
-        ),
-    )
-
-    con.commit()
-    con.close()
-
-
-def get_saved_outfit_images(saved):
-    try:
-        raw = saved["images_json"]
-
-        if not raw:
-            return []
-
-        data = json.loads(raw)
-
-        return (
-            data
-            if isinstance(data, list)
-            else []
-        )
-
-    except Exception:
-        return []
-
-
-def image_from_saved_data(
-    image_data,
-):
-    try:
-        return base64.b64decode(
-            image_data["data"]
-        )
-    except Exception:
-        return None
-
-
-# =========================================================
-# ВСПОМОГАТЕЛЬНЫЕ
-# =========================================================
-
-def image_to_data_url(
-    uploaded_file,
-):
-    encoded = base64.b64encode(
-        uploaded_file.getvalue()
-    ).decode("utf-8")
-
-    mime = (
-        uploaded_file.type
-        or "image/jpeg"
-    )
-
-    return (
-        f"data:{mime};base64,{encoded}"
-    )
-
-
-def extract_json(text):
-    if not text:
-        raise ValueError(
-            "AI вернул пустой ответ."
-        )
-
-    text = text.strip()
-
-    text = re.sub(
-        r"^```(?:json)?\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = re.sub(
-        r"\s*```$",
-        "",
-        text,
-    ).strip()
-
-    try:
-        return json.loads(text)
-
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-
-        if start != -1 and end != -1:
-            return json.loads(
-                text[start:end + 1]
-            )
-
-        raise
-
-
-def safe_int(value):
-    try:
-        return int(value)
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return None
-
-
-def ai_error_message(error):
-    text = str(error).lower()
-
-    if (
-        "timeout" in text
-        or "connecttimeout" in text
-    ):
-        return (
-            "⏱️ AI не успел ответить. "
-            "Попробуй ещё раз или загрузи "
-            "фотографию меньшего размера."
-        )
-
-    return (
-        "❌ Не удалось получить ответ от AI."
-    )
-
-
-# =========================================================
+# =====================================================
 # SESSION
-# =========================================================
+# =====================================================
 
-defaults = {
-    "logged_in": False,
-    "user_id": None,
-    "selected_style": "Indie Sleaze",
-    "analysis_result": None,
-    "analysis_style": None,
-    "improved_result": None,
-    "current_analysis_id": None,
-    "current_analysis_image": None,
-    "wardrobe_data": None,
-    "wardrobe_files": [],
-}
-
-for key, value in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+if "selected_style" not in st.session_state:
+    st.session_state.selected_style = STYLES[0]
 
 
-# =========================================================
-# ЭКРАН ВХОДА / РЕГИСТРАЦИИ
-# =========================================================
+def logout():
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
 
-if not st.session_state.logged_in:
 
+# =====================================================
+# LOGIN / REGISTER
+# =====================================================
+
+if not st.session_state.user_id:
     st.markdown(
         """
-        <div class="login-wrap">
-            <div class="login-title">
-                👕 AI Stylist
-            </div>
-
-            <div class="login-subtitle">
-                Твой персональный AI-стилист
-            </div>
+        <div class="hero">
+            <div class="hero-title">👕 AI Stylist</div>
+            <div>Твой персональный AI-стилист</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    login_tab, register_tab = st.tabs(
-        [
-            "🔑 Войти",
-            "✨ Создать аккаунт",
-        ]
-    )
-
-    # -----------------------------------------------------
-    # ВХОД
-    # -----------------------------------------------------
+    login_tab, register_tab = st.tabs(["🔑 Войти", "✨ Регистрация"])
 
     with login_tab:
-
         with st.form("login_form"):
-
-            email = st.text_input(
-                "Email",
-                placeholder="you@example.com",
-            )
-
-            password = st.text_input(
-                "Пароль",
-                type="password",
-            )
-
+            email = st.text_input("Email")
+            password = st.text_input("Пароль", type="password")
             submitted = st.form_submit_button(
-                "🔑 Войти",
+                "Войти",
                 use_container_width=True,
             )
 
         if submitted:
-
-            user = authenticate(
-                email,
-                password,
-            )
-
+            user = authenticate(email, password)
             if user:
-
-                st.session_state.logged_in = True
                 st.session_state.user_id = user["id"]
-
                 st.rerun()
-
             else:
-
-                st.error(
-                    "Неверный email или пароль."
-                )
-
-    # -----------------------------------------------------
-    # РЕГИСТРАЦИЯ
-    # -----------------------------------------------------
+                st.error("Неверный email или пароль.")
 
     with register_tab:
-
-        with st.form(
-            "register_form"
-        ):
-
-            new_email = st.text_input(
-                "Email",
-                placeholder="you@example.com",
-            )
-
+        with st.form("register_form"):
+            new_email = st.text_input("Email", key="register_email")
             new_password = st.text_input(
-                "Пароль",
+                "Пароль — минимум 8 символов",
                 type="password",
-                help="Минимум 8 символов.",
+                key="register_password",
             )
-
-            new_password2 = st.text_input(
+            repeat_password = st.text_input(
                 "Повтори пароль",
                 type="password",
             )
-
-            register = st.form_submit_button(
-                "✨ Зарегистрироваться",
+            submitted = st.form_submit_button(
+                "Создать аккаунт",
                 use_container_width=True,
             )
 
-        if register:
-
-            if new_password != new_password2:
-
-                st.error(
-                    "Пароли не совпадают."
-                )
-
+        if submitted:
+            if new_password != repeat_password:
+                st.error("Пароли не совпадают.")
             else:
-
-                ok, result = create_user(
-                    new_email,
-                    new_password,
-                )
-
+                ok, result = register_user(new_email, new_password)
                 if ok:
-
-                    st.session_state.logged_in = True
                     st.session_state.user_id = result
-
-                    st.success(
-                        "Аккаунт создан!"
-                    )
-
+                    st.success("Аккаунт создан.")
                     st.rerun()
-
                 else:
-
                     st.error(result)
 
     st.stop()
 
 
-# =========================================================
-# ТЕКУЩИЙ ПОЛЬЗОВАТЕЛЬ
-# =========================================================
-
-user = get_user(
-    st.session_state.user_id
-)
-
+user = get_user(st.session_state.user_id)
 if not user:
-
-    st.session_state.clear()
-
+    logout()
     st.rerun()
 
-
 user_id = user["id"]
-balance = int(user["balance"])
 
-
-# =========================================================
-# ШАПКА
-# =========================================================
+# =====================================================
+# HEADER
+# =====================================================
 
 st.markdown(
     """
     <div class="hero">
-        <div class="hero-title">
-            👕 AI Stylist
-        </div>
-
-        <div class="hero-subtitle">
-            Собирай образы, анализируй стиль
-            и управляй своим гардеробом
-        </div>
+        <div class="hero-title">👕 AI Stylist</div>
+        <div>Собирай образы, анализируй стиль и управляй гардеробом</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-
-top_left, top_mid, top_right = st.columns(
-    [2, 2, 1]
-)
-
-
-# ---------------------------------------------------------
-# EMAIL
-# ---------------------------------------------------------
-
-with top_left:
-
-    safe_email = escape(
-        str(user["email"])
-    )
-
-    st.markdown(
-        f"""
-        <div class="account-email">
-            👋 {safe_email}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ---------------------------------------------------------
-# БАЛАНС
-# ---------------------------------------------------------
-
-with top_mid:
-
-    st.caption(
-        f"💰 Баланс: **{balance} ₽**"
-    )
-
-
-# ---------------------------------------------------------
-# ВЫХОД
-# ---------------------------------------------------------
-
-with top_right:
-
-    st.button(
-        "Выйти",
-        use_container_width=True,
-        key="header_logout",
-        on_click=logout,
-    )
-
-
-# =========================================================
-# ВКЛАДКИ
-# =========================================================
+left, middle, right = st.columns([3, 2, 1])
+with left:
+    st.caption(f"👋 {escape(user['email'])}")
+with middle:
+    st.metric("Баланс", f"{user['balance']} ₽")
+with right:
+    st.button("Выйти", on_click=logout, use_container_width=True)
 
 tab_analysis, tab_wardrobe, tab_account = st.tabs(
-    [
-        "✨ Оценка образа",
-        "👗 Мой гардероб",
-        "👤 Мой аккаунт",
-    ]
+    ["✨ Оценка образа", "👗 Мой гардероб", "👤 Аккаунт"]
 )
 
-
-# =========================================================
-# ВКЛАДКА — ОЦЕНКА ОБРАЗА
-# =========================================================
+# =====================================================
+# OUTFIT ANALYSIS
+# =====================================================
 
 with tab_analysis:
+    st.header("✨ Оценка образа")
+    st.write("Загрузи фотографию и получи рекомендации по стилю.")
 
-    st.markdown(
-        '<div class="section-title">'
-        '✨ Оценка образа'
-        '</div>',
-        unsafe_allow_html=True,
+    st.session_state.selected_style = st.selectbox(
+        "Выбери стиль",
+        STYLES,
+        index=STYLES.index(st.session_state.selected_style),
     )
 
-    st.caption(
-        "Загрузи фото образа — AI разберёт "
-        "одежду, цвета, пропорции и "
-        "соответствие выбранному стилю."
+    outfit_photo = st.file_uploader(
+        "Фотография образа",
+        type=["jpg", "jpeg", "png"],
+        key="analysis_photo",
     )
 
-    st.subheader(
-        "🎨 Выбери стиль"
-    )
+    if outfit_photo:
+        try:
+            photo = image_bytes(outfit_photo)
+            st.image(photo, caption="Твой образ", use_container_width=True)
 
-    style_cols = st.columns(5)
-
-    for i, style_name in enumerate(
-        STYLES
-    ):
-
-        with style_cols[i]:
-
-            if st.button(
-                style_name,
-                use_container_width=True,
-                key=f"style_{i}",
-            ):
-                st.session_state.selected_style = (
-                    style_name
-                )
-
-    style = (
-        st.session_state.selected_style
-    )
-
-    st.info(
-        f"🎨 Сейчас выбран стиль: **{style}**"
-    )
-
-    uploaded_file = st.file_uploader(
-        "📸 Фотография образа",
-        type=[
-            "jpg",
-            "jpeg",
-            "png",
-        ],
-        key="outfit_uploader",
-    )
-
-    if uploaded_file:
-
-        st.image(
-            uploaded_file,
-            caption="Твой образ",
-            width="stretch",
-        )
-
-        free_available = (
-            int(user["free_analysis_used"])
-            == 0
-        )
-
-        price_text = (
-            "🎁 Первая оценка — бесплатно"
-            if free_available
-            else (
-                f"💳 Стоимость оценки — "
-                f"{PRICES['analysis']} ₽"
+            free_available = user["free_analysis_used"] == 0
+            price = 0 if free_available else PRICES["analysis"]
+            st.write(
+                "Первая оценка бесплатна."
+                if free_available
+                else f"Стоимость анализа: {price} ₽"
             )
-        )
 
-        st.markdown(
-            f"""
-            <div class="card">
-                <b>✨ Анализ образа</b>
-
-                <div class="price">
-                    {
-                        "Бесплатно"
-                        if free_available
-                        else f"{PRICES['analysis']} ₽"
-                    }
-                </div>
-
-                <div class="muted">
-                    {price_text}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if st.button(
-            "✨ Оценить мой образ",
-            use_container_width=True,
-            type="primary",
-            key="analyze_outfit",
-        ):
-
-            if not free_available:
-
-                if (
-                    balance
-                    < PRICES["analysis"]
-                ):
-
-                    st.error(
-                        f"Недостаточно средств. "
-                        f"Нужно "
-                        f"{PRICES['analysis']} ₽."
-                    )
-
-                    st.info(
-                        "Пополнение баланса "
-                        "можно подключить через "
-                        "платёжную систему "
-                        "после её настройки."
-                    )
-
-                    st.stop()
-
-            with st.spinner(
-                "AI анализирует твой образ..."
-            ):
-
-                try:
-
-                    image_url = (
-                        image_to_data_url(
-                            uploaded_file
-                        )
-                    )
-
-                    prompt = f"""
-Ты — профессиональный AI-стилист.
-
-Пользователь выбрал стиль: {style}
-
-Проанализируй одежду человека
-на фотографии с точки зрения
-соответствия стилю "{style}".
-
-Ответь на русском языке.
-
-Используй формат:
+            if st.button("✨ Проанализировать образ", type="primary"):
+                if not free_available and user["balance"] < price:
+                    st.error("Недостаточно средств.")
+                else:
+                    with st.spinner("AI анализирует образ..."):
+                        try:
+                            prompt = f"""
+Ты — профессиональный стилист.
+Проанализируй только одежду, обувь, аксессуары, цвета,
+сочетания и соответствие стилю {st.session_state.selected_style}.
+Не оценивай лицо, тело или привлекательность.
+Отвечай по-русски, используй Markdown, нормальные переносы строк.
 
 ОЦЕНКА: X/10
-
-ЧТО ХОРОШО:
-- пункт
-- пункт
-- пункт
-
-ЧТО МОЖНО УЛУЧШИТЬ:
-- пункт
-- пункт
-- пункт
-
-ЧТО ДОБАВИТЬ:
-- пункт
-- пункт
-- пункт
-
-СОВЕТ:
-Короткий конкретный совет.
-
-Анализируй только одежду,
-цвета, вещи, обувь, аксессуары,
-сочетания, силуэт, пропорции
-и стиль.
-
-Не оценивай лицо, тело,
-привлекательность или физические
-особенности человека.
+### Что хорошо
+- ...
+### Что улучшить
+- ...
+### Что добавить
+- ...
+### Совет
+...
 """
-
-                    response = (
-                        client.chat.completions.create(
-                            model=MODEL,
-                            max_tokens=1600,
-                            messages=[
-                                {
+                            result = call_ai(
+                                [{
                                     "role": "user",
                                     "content": [
-                                        {
-                                            "type": "text",
-                                            "text": prompt,
-                                        },
+                                        {"type": "text", "text": prompt},
                                         {
                                             "type": "image_url",
                                             "image_url": {
-                                                "url": image_url
+                                                "url": image_data_url(photo)
                                             },
                                         },
                                     ],
-                                }
-                            ],
-                        )
-                    )
-
-                    result = (
-                        response
-                        .choices[0]
-                        .message
-                        .content
-                    )
-
-                    if not result:
-                        raise ValueError(
-                            "AI вернул пустой результат."
-                        )
-
-                    # Списываем только после
-                    # успешного ответа AI.
-                    if free_available:
-
-                        if not use_free_analysis(
-                            user_id
-                        ):
-                            raise RuntimeError(
-                                "Не удалось применить "
-                                "бесплатную попытку."
+                                }],
                             )
 
-                    else:
-
-                        if not charge_user(
-                            user_id,
-                            PRICES["analysis"],
-                            "Оценка образа",
-                        ):
-                            raise RuntimeError(
-                                "Не удалось списать средства."
-                            )
-
-                    st.session_state.analysis_result = (
-                        result
-                    )
-
-                    st.session_state.analysis_style = (
-                        style
-                    )
-
-                    st.session_state.improved_result = (
-                        None
-                    )
-
-                    st.session_state.current_analysis_id = (
-                        None
-                    )
-
-                    st.session_state.current_analysis_image = (
-                        uploaded_file.getvalue()
-                    )
-
-                    st.success(
-                        "Анализ готов! ✅"
-                    )
-
-                    st.rerun()
-
-                except Exception as e:
-
-                    st.error(
-                        ai_error_message(e)
-                    )
-
-                    st.code(str(e))
-
-    # =====================================================
-    # РЕЗУЛЬТАТ АНАЛИЗА
-    # =====================================================
-
-    if st.session_state.analysis_result:
-
-        st.divider()
-
-        st.subheader(
-            "🤖 Результат"
-        )
-
-        st.info(
-            f"🎨 Стиль: **"
-            f"{st.session_state.analysis_style or style}"
-            f"**"
-        )
-
-        st.markdown(
-            st.session_state.analysis_result
-        )
-
-        if (
-            st.session_state.current_analysis_id
-        ):
-
-            st.success(
-                "⭐ Анализ уже сохранён."
-            )
-
-        else:
-
-            if st.button(
-                "💾 Сохранить анализ",
-                use_container_width=True,
-                key="save_analysis",
-            ):
-
-                try:
-
-                    analysis_style = (
-                        st.session_state.analysis_style
-                        or style
-                    )
-
-                    if analysis_exists(
-                        user_id,
-                        analysis_style,
-                        st.session_state.analysis_result,
-                    ):
-
-                        st.warning(
-                            "Этот анализ уже сохранён."
-                        )
-
-                    else:
-
-                        saved_id = (
-                            save_analysis_to_db(
-                                user_id=user_id,
-                                style=analysis_style,
-                                analysis=(
-                                    st.session_state
-                                    .analysis_result
-                                ),
-                                image_bytes=(
-                                    st.session_state
-                                    .current_analysis_image
-                                ),
-                                image_name="outfit.jpg",
-                                image_type="image/jpeg",
-                            )
-                        )
-
-                        st.session_state.current_analysis_id = (
-                            saved_id
-                        )
-
-                        st.success(
-                            "⭐ Анализ сохранён."
-                        )
-
-                        st.rerun()
-
-                except Exception as e:
-
-                    st.error(
-                        "Не удалось сохранить анализ."
-                    )
-
-                    st.code(str(e))
-
-        st.divider()
-
-        st.subheader(
-            "✨ Улучшить образ"
-        )
-
-        st.markdown(
-            f"""
-            <div class="card">
-                <b>✨ Персональное улучшение</b>
-
-                <div class="price">
-                    {PRICES['improve']} ₽
-                </div>
-
-                <div class="muted">
-                    AI составит конкретный
-                    план изменений.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if st.button(
-            f"✨ Улучшить образ — "
-            f"{PRICES['improve']} ₽",
-            use_container_width=True,
-            key="improve_outfit",
-        ):
-
-            if balance < PRICES["improve"]:
-
-                st.error(
-                    f"Недостаточно средств. "
-                    f"Нужно "
-                    f"{PRICES['improve']} ₽."
-                )
-
-            else:
-
-                with st.spinner(
-                    "AI разрабатывает "
-                    "улучшенную версию..."
-                ):
-
-                    try:
-
-                        analysis_style = (
-                            st.session_state
-                            .analysis_style
-                            or style
-                        )
-
-                        improve_prompt = f"""
-Ты — профессиональный AI-стилист.
-
-Стиль пользователя:
-{analysis_style}
-
-Анализ текущего образа:
-{st.session_state.analysis_result}
-
-Составь конкретный план улучшения.
-
-Ответь на русском языке.
-
-🎯 ГЛАВНАЯ ПРОБЛЕМА
-Что сильнее всего можно улучшить.
-
-👕 ЧТО ИЗМЕНИТЬ
-- конкретная вещь
-- конкретная вещь
-- конкретная вещь
-
-➕ ЧТО ДОБАВИТЬ
-- конкретный предмет
-- конкретный аксессуар
-
-🎨 ЦВЕТА
-Какие цвета лучше использовать.
-
-📐 ПРОПОРЦИИ
-Как улучшить сочетание верха,
-низа и обуви.
-
-🔥 ГОТОВЫЙ ВАРИАНТ
-Опиши итоговый образ.
-
-💡 ГЛАВНЫЙ СОВЕТ
-Один самый практичный совет.
-
-Не оценивай лицо, тело
-или привлекательность.
-"""
-
-                        response = (
-                            client
-                            .chat
-                            .completions
-                            .create(
-                                model=MODEL,
-                                max_tokens=1600,
-                                messages=[
-                                    {
-                                        "role": "user",
-                                        "content": improve_prompt,
-                                    }
-                                ],
-                            )
-                        )
-
-                        improved = (
-                            response
-                            .choices[0]
-                            .message
-                            .content
-                        )
-
-                        if not improved:
-                            raise ValueError(
-                                "AI вернул пустой результат."
-                            )
-
-                        if not charge_user(
-                            user_id,
-                            PRICES["improve"],
-                            "Улучшение образа",
-                        ):
-                            raise RuntimeError(
-                                "Не удалось списать средства."
-                            )
-
-                        st.session_state.improved_result = (
-                            improved
-                        )
-
-                        if (
-                            st.session_state
-                            .current_analysis_id
-                        ):
-
-                            update_analysis_improvement(
-                                st.session_state
-                                .current_analysis_id,
-                                user_id,
-                                improved,
-                            )
-
-                        st.success(
-                            "✨ Готово!"
-                        )
-
-                        st.rerun()
-
-                    except Exception as e:
-
-                        st.error(
-                            ai_error_message(e)
-                        )
-
-                        st.code(str(e))
-
-        if st.session_state.improved_result:
-
-            st.divider()
-
-            st.subheader(
-                "✨ Улучшенная версия"
-            )
-
-            st.markdown(
-                st.session_state.improved_result
-            )
-
-    # =====================================================
-    # СОХРАНЁННЫЕ АНАЛИЗЫ
-    # =====================================================
-
-    st.divider()
-
-    st.subheader(
-        "🗂️ Мои сохранённые анализы"
-    )
-
-    saved_analyses = (
-        get_all_analyses(user_id)
-    )
-
-    if not saved_analyses:
-
-        st.info(
-            "Пока нет сохранённых анализов."
-        )
-
-    else:
-
-        for saved in saved_analyses:
-
-            with st.expander(
-                f"👕 {saved['style']} "
-                f"• {saved['created_at']}"
-            ):
-
-                if saved["image"]:
-
-                    st.image(
-                        saved["image"],
-                        caption=(
-                            saved["image_name"]
-                            or "Образ"
-                        ),
-                        width="stretch",
-                    )
-
-                st.markdown(
-                    saved["analysis"]
-                )
-
-                if saved[
-                    "improved_result"
-                ]:
-
-                    st.divider()
-
-                    st.subheader(
-                        "✨ Улучшенная версия"
-                    )
-
-                    st.markdown(
-                        saved[
-                            "improved_result"
-                        ]
-                    )
-
-                if st.button(
-                    "🗑️ Удалить",
-                    key=(
-                        f"delete_analysis_"
-                        f"{saved['id']}"
-                    ),
-                ):
-
-                    delete_analysis(
-                        saved["id"],
-                        user_id,
-                    )
-
-                    st.rerun()
-
-
-# =========================================================
-# ВКЛАДКА — ГАРДЕРОБ
-# =========================================================
-
-with tab_wardrobe:
-
-    st.markdown(
-        '<div class="section-title">'
-        '👗 Мой гардероб'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.caption(
-        "Загружай вещи бесплатно. AI "
-        "распознает их и поможет собрать образы."
-    )
-
-    st.subheader(
-        "➕ Добавить вещи"
-    )
-
-    wardrobe_files = st.file_uploader(
-        "Фотографии одежды",
-        type=[
-            "jpg",
-            "jpeg",
-            "png",
-        ],
-        accept_multiple_files=True,
-        key="wardrobe_uploader",
-    )
-
-    if wardrobe_files:
-
-        if len(wardrobe_files) > 6:
-
-            st.warning(
-                "Максимум 6 фотографий "
-                "за один анализ."
-            )
-
-        else:
-
-            cols = st.columns(
-                min(3, len(wardrobe_files))
-            )
-
-            for i, file in enumerate(
-                wardrobe_files
-            ):
-
-                with cols[
-                    i % len(cols)
-                ]:
-
-                    st.image(
-                        file,
-                        caption=(
-                            f"Вещь №{i + 1}"
-                        ),
-                        width="stretch",
-                    )
-
-            st.info(
-                "💚 Загрузка одежды бесплатна."
-            )
-
-            build_free = (
-                int(
-                    user[
-                        "free_wardrobe_outfit_used"
-                    ]
-                )
-                == 0
-            )
-
-            st.markdown(
-                f"""
-                <div class="card">
-                    <b>✨ Собрать 3 образа</b>
-
-                    <div class="price">
-                        {
-                            "Бесплатно"
-                            if build_free
-                            else f"{PRICES['wardrobe_outfit']} ₽"
-                        }
-                    </div>
-
-                    <div class="muted">
-                        Используются только
-                        загруженные вещи.
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            if st.button(
-                "✨ Собрать образы",
-                use_container_width=True,
-                type="primary",
-                key="build_wardrobe",
-            ):
-
-                if (
-                    not build_free
-                    and balance
-                    < PRICES["wardrobe_outfit"]
-                ):
-
-                    st.error(
-                        f"Недостаточно средств. "
-                        f"Нужно "
-                        f"{PRICES['wardrobe_outfit']} ₽."
-                    )
-
-                else:
-
-                    with st.spinner(
-                        "AI анализирует гардероб..."
-                    ):
-
-                        try:
-
-                            style = (
-                                st.session_state
-                                .selected_style
-                            )
-
-                            wardrobe_prompt = f"""
-Ты — профессиональный AI-стилист.
-
-Стиль пользователя:
-{style}
-
-Пользователь загрузил
-{len(wardrobe_files)} фотографий.
-
-Фото 1 = вещь 1.
-Фото 2 = вещь 2.
-И так далее.
-
-Проанализируй каждую вещь.
-
-Для каждой определи:
-- название;
-- категорию;
-- цвет;
-- материал или фактуру;
-- бренд;
-- уверенность бренда;
-- описание.
-
-НИКОГДА НЕ ПРИДУМЫВАЙ БРЕНД.
-Если бренд не виден, напиши
-"Не удалось определить".
-
-После анализа создай 3 разных образа.
-
-Используй ТОЛЬКО загруженные вещи.
-Не добавляй вещи, которых нет
-на фотографиях.
-
-Верни ТОЛЬКО JSON.
-
-Структура:
-
-{{
-    "items": [
-        {{
-            "number": 1,
-            "name": "название",
-            "category": "категория",
-            "color": "цвет",
-            "material": "материал",
-            "brand": "бренд",
-            "brand_confidence": "высокая",
-            "description": "описание"
-        }}
-    ],
-    "outfits": [
-        {{
-            "number": 1,
-            "name": "название образа",
-            "items": [1, 2],
-            "explanation": "описание"
-        }},
-        {{
-            "number": 2,
-            "name": "название образа",
-            "items": [2, 3],
-            "explanation": "описание"
-        }},
-        {{
-            "number": 3,
-            "name": "название образа",
-            "items": [1, 3],
-            "explanation": "описание"
-        }}
-    ],
-    "main_advice": "совет"
-}}
-
-Номера вещей должны соответствовать
-фотографиям.
-
-Не анализируй лицо, тело
-или привлекательность.
-"""
-
-                            content = [
-                                {
-                                    "type": "text",
-                                    "text": wardrobe_prompt,
-                                }
-                            ]
-
-                            for file in wardrobe_files:
-
-                                content.append(
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": (
-                                                image_to_data_url(
-                                                    file
-                                                )
-                                            )
-                                        },
-                                    }
-                                )
-
-                            response = (
-                                client
-                                .chat
-                                .completions
-                                .create(
-                                    model=MODEL,
-                                    max_tokens=3000,
-                                    messages=[
-                                        {
-                                            "role": "user",
-                                            "content": content,
-                                        }
-                                    ],
-                                )
-                            )
-
-                            wardrobe_text = (
-                                response
-                                .choices[0]
-                                .message
-                                .content
-                            )
-
-                            wardrobe_data = (
-                                extract_json(
-                                    wardrobe_text
-                                )
-                            )
-
-                            if not isinstance(
-                                wardrobe_data,
-                                dict,
-                            ):
-                                raise ValueError(
-                                    "Неверный формат JSON."
-                                )
-
-                            if build_free:
-
-                                if not use_free_wardrobe_outfit(
-                                    user_id
+                            if free_available:
+                                if not use_free_attempt(
+                                    user_id, "free_analysis_used"
                                 ):
                                     raise RuntimeError(
-                                        "Не удалось применить "
-                                        "бесплатную попытку."
+                                        "Бесплатная попытка уже использована."
                                     )
-
                             else:
-
                                 if not charge_user(
-                                    user_id,
-                                    PRICES[
-                                        "wardrobe_outfit"
-                                    ],
-                                    "Сбор образов "
-                                    "из гардероба",
+                                    user_id, price, "Оценка образа"
                                 ):
                                     raise RuntimeError(
-                                        "Не удалось "
-                                        "списать средства."
+                                        "Не удалось списать средства."
                                     )
 
-                            st.session_state.wardrobe_data = (
-                                wardrobe_data
+                            save_analysis(
+                                user_id,
+                                st.session_state.selected_style,
+                                result,
+                                photo,
                             )
-
-                            st.session_state.wardrobe_files = (
-                                wardrobe_files
-                            )
-
-                            # Сохраняем вещи
-                            # в постоянный гардероб.
-                            for index, item in enumerate(
-                                wardrobe_data.get(
-                                    "items",
-                                    [],
-                                )
-                            ):
-
-                                number = safe_int(
-                                    item.get(
-                                        "number"
-                                    )
-                                )
-
-                                if (
-                                    number
-                                    and 1
-                                    <= number
-                                    <= len(
-                                        wardrobe_files
-                                    )
-                                ):
-
-                                    save_wardrobe_item(
-                                        user_id,
-                                        item,
-                                        wardrobe_files[
-                                            number - 1
-                                        ],
-                                    )
-
-                            st.success(
-                                "🎉 Гардероб готов!"
-                            )
-
+                            st.session_state.last_analysis = result
+                            st.success("Анализ сохранён.")
                             st.rerun()
 
                         except Exception as e:
+                            st.error(f"Не удалось выполнить анализ: {e}")
 
-                            st.error(
-                                ai_error_message(e)
-                            )
+        except Exception as e:
+            st.error(f"Не удалось открыть изображение: {e}")
 
-                            st.code(str(e))
-
-    # =====================================================
-    # AI-РЕЗУЛЬТАТ
-    # =====================================================
-
-    if st.session_state.wardrobe_data:
-
-        wardrobe_data = (
-            st.session_state.wardrobe_data
-        )
-
-        st.divider()
-
-        st.subheader(
-            "✨ Результат AI"
-        )
-
-        items = wardrobe_data.get(
-            "items",
-            [],
-        )
-
-        item_by_number = {}
-
-        for item in items:
-
-            number = safe_int(
-                item.get("number")
-            )
-
-            if number:
-                item_by_number[
-                    number
-                ] = item
-
-        if items:
-
-            st.write(
-                "### 👕 Распознанные вещи"
-            )
-
-            item_cols = st.columns(2)
-
-            for index, item in enumerate(
-                items
-            ):
-
-                with item_cols[
-                    index % 2
-                ]:
-
-                    st.markdown(
-                        f"**"
-                        f"{item.get('name', 'Вещь')}"
-                        f"**"
-                    )
-
-                    st.caption(
-                        f"№"
-                        f"{item.get('number', '?')}"
-                        f" · "
-                        f"{item.get('category', '—')}"
-                    )
-
-                    st.write(
-                        f"Цвет: "
-                        f"{item.get('color', '—')}"
-                    )
-
-                    st.write(
-                        f"Материал: "
-                        f"{item.get('material', '—')}"
-                    )
-
-                    st.write(
-                        f"Бренд: "
-                        f"{item.get('brand', '—')}"
-                    )
-
-        outfits = wardrobe_data.get(
-            "outfits",
-            [],
-        )
-
-        if outfits:
-
-            st.write(
-                "### 🔥 Собранные образы"
-            )
-
-            for outfit_index, outfit in enumerate(
-                outfits
-            ):
-
-                with st.container(
-                    border=True
-                ):
-
-                    st.markdown(
-                        f"#### 🔥 "
-                        f"{outfit.get('name', 'Образ')}"
-                    )
-
-                    selected_items = []
-
-                    for number in outfit.get(
-                        "items",
-                        [],
-                    ):
-
-                        number = safe_int(
-                            number
-                        )
-
-                        if (
-                            number
-                            in item_by_number
-                        ):
-
-                            selected_items.append(
-                                item_by_number[
-                                    number
-                                ]
-                            )
-
-                    if selected_items:
-
-                        image_cols = st.columns(
-                            min(
-                                3,
-                                len(
-                                    selected_items
-                                ),
-                            )
-                        )
-
-                        for index, item in enumerate(
-                            selected_items
-                        ):
-
-                            with image_cols[
-                                index
-                                % len(image_cols)
-                            ]:
-
-                                number = safe_int(
-                                    item.get(
-                                        "number"
-                                    )
-                                )
-
-                                files = (
-                                    st.session_state
-                                    .wardrobe_files
-                                )
-
-                                if (
-                                    files
-                                    and number
-                                    and number
-                                    <= len(files)
-                                ):
-
-                                    st.image(
-                                        files[
-                                            number - 1
-                                        ],
-                                        width="stretch",
-                                    )
-
-                                st.caption(
-                                    item.get(
-                                        "name",
-                                        "Вещь",
-                                    )
-                                )
-
-                    explanation = outfit.get(
-                        "explanation",
-                        "",
-                    )
-
-                    if explanation:
-
-                        st.info(
-                            f"💡 {explanation}"
-                        )
-
-                    if st.button(
-                        "💾 Сохранить образ",
-                        use_container_width=True,
-                        key=(
-                            f"save_wardrobe_"
-                            f"{outfit_index}"
-                        ),
-                    ):
-
-                        try:
-
-                            save_wardrobe_outfit(
-                                user_id=user_id,
-                                name=outfit.get(
-                                    "name",
-                                    "Образ",
-                                ),
-                                style=(
-                                    st.session_state
-                                    .selected_style
-                                ),
-                                items=outfit.get(
-                                    "items",
-                                    [],
-                                ),
-                                explanation=(
-                                    explanation
-                                ),
-                                wardrobe_files=(
-                                    st.session_state
-                                    .wardrobe_files
-                                ),
-                            )
-
-                            st.success(
-                                "⭐ Образ сохранён."
-                            )
-
-                        except Exception as e:
-
-                            st.error(
-                                "Не удалось "
-                                "сохранить образ."
-                            )
-
-                            st.code(str(e))
-
-        if wardrobe_data.get(
-            "main_advice"
-        ):
-
-            st.info(
-                f"💡 Совет стилиста: "
-                f"{wardrobe_data['main_advice']}"
-            )
-
-    # =====================================================
-    # ПОСТОЯННЫЙ ГАРДЕРОБ
-    # =====================================================
+    if st.session_state.get("last_analysis"):
+        st.subheader("Последний результат")
+        st.markdown(st.session_state.last_analysis)
 
     st.divider()
+    st.subheader("🗂️ Сохранённые анализы")
 
-    st.subheader(
-        "🧥 Мои вещи"
+    analyses = get_analyses(user_id)
+    if not analyses:
+        st.info("Сохранённых анализов пока нет.")
+    else:
+        for row in analyses:
+            with st.expander(
+                f"{row['style']} · {row['created_at']}"
+            ):
+                if row["image"]:
+                    st.image(row["image"], use_container_width=True)
+                st.markdown(row["analysis"])
+                if row["improved_result"]:
+                    st.markdown(row["improved_result"])
+                if st.button(
+                    "Удалить анализ",
+                    key=f"delete_analysis_{row['id']}",
+                ):
+                    delete_analysis(row["id"], user_id)
+                    st.rerun()
+
+# =====================================================
+# WARDROBE
+# =====================================================
+
+with tab_wardrobe:
+    st.header("👗 Мой гардероб")
+    st.write(
+        "Вещи сохраняются в базе данных и останутся после "
+        "выхода из аккаунта и перезапуска приложения."
     )
 
-    persistent_items = (
-        get_wardrobe_items(user_id)
-    )
+    st.subheader("➕ Добавить вещь")
 
-    if not persistent_items:
-
-        st.info(
-            "Пока нет сохранённых вещей. "
-            "Загрузи одежду выше."
+    with st.form("add_item_form", clear_on_submit=True):
+        uploaded = st.file_uploader(
+            "Фото одежды",
+            type=["jpg", "jpeg", "png"],
+            key="add_single_item",
+        )
+        item_name = st.text_input("Название", placeholder="Например, чёрная куртка")
+        category = st.selectbox(
+            "Категория",
+            [
+                "Верхняя одежда",
+                "Футболка / топ",
+                "Рубашка",
+                "Свитер / худи",
+                "Брюки",
+                "Джинсы",
+                "Юбка",
+                "Платье",
+                "Обувь",
+                "Сумка",
+                "Аксессуар",
+                "Другое",
+            ],
+        )
+        color = st.text_input("Цвет")
+        material = st.text_input("Материал")
+        brand = st.text_input("Бренд")
+        description = st.text_area("Описание")
+        add_clicked = st.form_submit_button(
+            "💾 Сохранить вещь",
+            use_container_width=True,
         )
 
+    if add_clicked:
+        if not uploaded:
+            st.error("Сначала загрузи фотографию.")
+        else:
+            try:
+                photo = image_bytes(uploaded)
+                add_wardrobe_item(
+                    user_id,
+                    item_name,
+                    category,
+                    color,
+                    material,
+                    brand,
+                    description,
+                    photo,
+                    uploaded.name,
+                )
+                st.success("Вещь добавлена в твой гардероб.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Не удалось сохранить вещь: {e}")
+
+    st.divider()
+    st.subheader("✨ Распознать вещи с помощью AI")
+
+    ai_files = st.file_uploader(
+        "Загрузи до 6 фотографий",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+        key="ai_wardrobe_files",
+    )
+
+    if ai_files:
+        if len(ai_files) > 6:
+            st.warning("Можно загрузить максимум 6 фотографий за раз.")
+        else:
+            previews = st.columns(min(3, len(ai_files)))
+            for i, file in enumerate(ai_files):
+                with previews[i % len(previews)]:
+                    st.image(file, caption=f"Фото {i + 1}", use_container_width=True)
+
+            if st.button("🤖 Распознать и сохранить вещи", type="primary"):
+                with st.spinner("AI распознаёт одежду..."):
+                    try:
+                        photos = [image_bytes(f) for f in ai_files]
+                        prompt = """
+Определи каждую одежду на фотографиях.
+Верни только JSON следующего вида:
+{
+  "items": [
+    {
+      "number": 1,
+      "name": "название вещи",
+      "category": "категория",
+      "color": "цвет",
+      "material": "материал или фактура",
+      "brand": "бренд или Не удалось определить",
+      "description": "краткое описание"
+    }
+  ]
+}
+Номера соответствуют порядку фотографий.
+Не выдумывай бренды. Ответ на русском языке.
+"""
+                        content = [{"type": "text", "text": prompt}]
+                        for photo in photos:
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_data_url(photo)
+                                },
+                            })
+
+                        raw = call_ai(
+                            [{"role": "user", "content": content}],
+                            max_tokens=2000,
+                        )
+                        data = parse_json(raw)
+                        items = data.get("items", [])
+
+                        saved_count = 0
+                        for item in items:
+                            try:
+                                number = int(item.get("number", 0))
+                            except (ValueError, TypeError):
+                                continue
+
+                            if not 1 <= number <= len(photos):
+                                continue
+
+                            add_wardrobe_item(
+                                user_id,
+                                str(item.get("name", "Вещь")),
+                                str(item.get("category", "")),
+                                str(item.get("color", "")),
+                                str(item.get("material", "")),
+                                str(item.get("brand", "Не удалось определить")),
+                                str(item.get("description", "")),
+                                photos[number - 1],
+                                ai_files[number - 1].name,
+                            )
+                            saved_count += 1
+
+                        if saved_count:
+                            st.success(
+                                f"В гардероб добавлено вещей: {saved_count}."
+                            )
+                            st.rerun()
+                        else:
+                            st.warning(
+                                "AI не вернул распознаваемые вещи. "
+                                "Попробуй другие фотографии."
+                            )
+
+                    except Exception as e:
+                        st.error(f"Не удалось распознать одежду: {e}")
+
+    st.divider()
+    st.subheader("🧥 Мои сохранённые вещи")
+
+    wardrobe = get_wardrobe_items(user_id)
+
+    if not wardrobe:
+        st.info("Гардероб пока пуст. Добавь первую вещь выше.")
     else:
+        st.caption(f"Всего вещей: {len(wardrobe)}")
 
-        item_cols = st.columns(3)
-
-        for index, item in enumerate(
-            persistent_items
-        ):
-
-            with item_cols[
-                index % 3
-            ]:
-
+        cols = st.columns(3)
+        for index, item in enumerate(wardrobe):
+            with cols[index % 3]:
                 st.image(
                     item["image"],
-                    width="stretch",
+                    use_container_width=True,
                 )
-
-                st.markdown(
-                    f"**"
-                    f"{item['name'] or 'Вещь'}"
-                    f"**"
-                )
-
-                st.caption(
-                    item["category"]
-                    or "Категория не определена"
-                )
+                st.markdown(f"**{item['name']}**")
+                st.caption(item["category"] or "Категория не указана")
 
                 if item["color"]:
+                    st.write(f"🎨 Цвет: {item['color']}")
+                if item["material"]:
+                    st.write(f"Материал: {item['material']}")
+                if item["brand"]:
+                    st.write(f"Бренд: {item['brand']}")
+                if item["description"]:
+                    st.write(item["description"])
 
-                    st.write(
-                        f"🎨 {item['color']}"
-                    )
+                with st.expander("Изменить данные"):
+                    with st.form(f"edit_item_{item['id']}"):
+                        new_name = st.text_input(
+                            "Название",
+                            value=item["name"] or "",
+                        )
+                        new_category = st.text_input(
+                            "Категория",
+                            value=item["category"] or "",
+                        )
+                        new_color = st.text_input(
+                            "Цвет",
+                            value=item["color"] or "",
+                        )
+                        new_material = st.text_input(
+                            "Материал",
+                            value=item["material"] or "",
+                        )
+                        new_brand = st.text_input(
+                            "Бренд",
+                            value=item["brand"] or "",
+                        )
+                        new_description = st.text_area(
+                            "Описание",
+                            value=item["description"] or "",
+                        )
+                        update_clicked = st.form_submit_button(
+                            "Сохранить изменения"
+                        )
+
+                    if update_clicked:
+                        with get_db() as con:
+                            con.execute(
+                                """
+                                UPDATE wardrobe_items
+                                SET name=?, category=?, color=?,
+                                    material=?, brand=?, description=?
+                                WHERE id=? AND user_id=?
+                                """,
+                                (
+                                    new_name.strip() or "Вещь",
+                                    new_category,
+                                    new_color,
+                                    new_material,
+                                    new_brand,
+                                    new_description,
+                                    item["id"],
+                                    user_id,
+                                ),
+                            )
+                        st.success("Изменения сохранены.")
+                        st.rerun()
 
                 if st.button(
-                    "🗑️ Удалить",
-                    key=(
-                        f"delete_item_"
-                        f"{item['id']}"
-                    ),
+                    "🗑️ Удалить вещь",
+                    key=f"delete_item_{item['id']}",
+                    use_container_width=True,
                 ):
-
-                    delete_wardrobe_item(
-                        item["id"],
-                        user_id,
-                    )
-
+                    delete_wardrobe_item(item["id"], user_id)
+                    st.success("Вещь удалена.")
                     st.rerun()
 
-    # =====================================================
-    # СОХРАНЁННЫЕ ОБРАЗЫ
-    # =====================================================
-
     st.divider()
+    st.subheader("⭐ Сохранённые образы")
 
-    st.subheader(
-        "⭐ Мои сохранённые образы"
-    )
-
-    saved_wardrobe = (
-        get_saved_wardrobe_outfits(
-            user_id
-        )
-    )
-
-    if not saved_wardrobe:
-
-        st.info(
-            "Сохранённых образов пока нет."
-        )
-
+    saved_outfits = get_saved_outfits(user_id)
+    if not saved_outfits:
+        st.info("Сохранённых образов пока нет.")
     else:
-
-        for saved in saved_wardrobe:
-
+        for outfit in saved_outfits:
             with st.expander(
-                f"⭐ {saved['name']} "
-                f"• {saved['created_at']}"
+                f"{outfit['name']} · {outfit['created_at']}"
             ):
-
-                st.caption(
-                    f"Стиль: "
-                    f"{saved['style'] or '—'}"
-                )
-
+                st.caption(f"Стиль: {outfit['style'] or '—'}")
                 try:
-
-                    saved_items = json.loads(
-                        saved["items_json"]
-                    )
-
-                except Exception:
-
-                    saved_items = []
-
-                if saved_items:
-
-                    st.write(
-                        "Вещи: "
-                        + ", ".join(
-                            f"№{x}"
-                            for x in saved_items
-                        )
-                    )
-
-                saved_images = (
-                    get_saved_outfit_images(
-                        saved
-                    )
-                )
-
-                if saved_images:
-
-                    image_cols = st.columns(
-                        min(
-                            3,
-                            len(
-                                saved_images
-                            ),
-                        )
-                    )
-
-                    for image_index, image_data in enumerate(
-                        saved_images
-                    ):
-
-                        image_bytes = (
-                            image_from_saved_data(
-                                image_data
-                            )
-                        )
-
-                        if image_bytes:
-
-                            with image_cols[
-                                image_index
-                                % len(image_cols)
-                            ]:
-
-                                st.image(
-                                    image_bytes,
-                                    caption=(
-                                        image_data.get(
-                                            "name",
-                                            "Вещь",
-                                        )
-                                    ),
-                                    width="stretch",
-                                )
-
-                if saved["explanation"]:
-
-                    st.info(
-                        saved["explanation"]
-                    )
-
+                    outfit_items = json.loads(outfit["items_json"] or "[]")
+                except (ValueError, TypeError):
+                    outfit_items = []
+                if outfit_items:
+                    st.write("ID вещей: " + ", ".join(map(str, outfit_items)))
+                if outfit["explanation"]:
+                    st.write(outfit["explanation"])
                 if st.button(
                     "🗑️ Удалить образ",
-                    key=(
-                        f"delete_saved_outfit_"
-                        f"{saved['id']}"
-                    ),
+                    key=f"delete_outfit_{outfit['id']}",
                 ):
-
-                    delete_saved_wardrobe_outfit(
-                        saved["id"],
-                        user_id,
-                    )
-
+                    delete_saved_outfit(outfit["id"], user_id)
                     st.rerun()
 
-
-# =========================================================
-# ВКЛАДКА — АККАУНТ
-# =========================================================
+# =====================================================
+# ACCOUNT
+# =====================================================
 
 with tab_account:
+    user = get_user(user_id)
 
-    st.markdown(
-        '<div class="section-title">'
-        '👤 Мой аккаунт'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    st.header("👤 Мой аккаунт")
+    st.write(f"Email: **{user['email']}**")
+    st.metric("Баланс", f"{user['balance']} ₽")
 
+    st.subheader("🎁 Бесплатные попытки")
     st.write(
-        f"Добро пожаловать, "
-        f"**{user['email']}** 👋"
+        "Оценка образа: "
+        + ("доступна" if not user["free_analysis_used"] else "использована")
+    )
+    st.write(
+        "Сбор образа из гардероба: "
+        + ("доступен" if not user["free_outfit_used"] else "использован")
     )
 
-    current_balance = get_balance(
-        user_id
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-      st.markdown(
-            f"""
-            <div class="card">
-                <div class="muted">
-                    💰 Баланс
-                </div>
-
-                <div class="balance">
-                    {current_balance} ₽
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with col2:
-
-        free_analysis = (
-            int(
-                user[
-                    "free_analysis_used"
-                ]
-            )
-            == 0
-        )
-
-        free_wardrobe = (
-            int(
-                user[
-                    "free_wardrobe_outfit_used"
-                ]
-            )
-            == 0
-        )
-
-        st.markdown(
-            f"""
-            <div class="card">
-                <b>🎁 Бесплатные попытки</b>
-                <br><br>
-
-                {"🟢" if free_analysis else "⚪"}
-                Оценка образа
-                <br>
-
-                {
-                    "🟢"
-                    if free_wardrobe
-                    else "⚪"
-                }
-                Сбор образа из гардероба
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.subheader(
-        "💳 Цены"
-    )
-
-    price_cols = st.columns(3)
-
-    with price_cols[0]:
-
-        st.markdown(
-            f"""
-            <div class="card">
-                <b>✨ Оценка</b>
-
-                <div class="price">
-                    20 ₽
-                </div>
-
-                <div class="muted">
-                    после первой бесплатной
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with price_cols[1]:
-
-        st.markdown(
-            f"""
-            <div class="card">
-                <b>✨ Улучшение</b>
-
-                <div class="price">
-                    10 ₽
-                </div>
-
-                <div class="muted">
-                    за один результат
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with price_cols[2]:
-
-        st.markdown(
-            f"""
-            <div class="card">
-                <b>👗 Образ из гардероба</b>
-
-                <div class="price">
-                    50 ₽
-                </div>
-
-                <div class="muted">
-                    после первой бесплатной
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.subheader(
-        "➕ Пополнение баланса"
-    )
+    st.subheader("💳 Цены")
+    st.write(f"Оценка образа: {PRICES['analysis']} ₽")
+    st.write(f"Улучшение образа: {PRICES['improve']} ₽")
+    st.write(f"Сбор образов из гардероба: {PRICES['outfit']} ₽")
 
     st.info(
-        "Реальное пополнение пока не подключено. "
-        "Следующим этапом можно подключить ЮKassa, "
-        "чтобы деньги зачислялись только после "
-        "подтверждения платежа."
+        "Пополнение баланса не подключено. "
+        "Для реальных платежей потребуется платёжный провайдер."
     )
 
-    st.divider()
-
-    st.subheader(
-        "📋 История операций"
-    )
-
-    transactions = get_transactions(
-        user_id
-    )
+    st.subheader("📋 История операций")
+    with get_db() as con:
+        transactions = con.execute(
+            """
+            SELECT * FROM transactions
+            WHERE user_id=?
+            ORDER BY id DESC LIMIT 50
+            """,
+            (user_id,),
+        ).fetchall()
 
     if not transactions:
-
-        st.caption(
-            "Операций пока нет."
-        )
-
+        st.caption("Операций пока нет.")
     else:
-
-        for transaction in transactions:
-
-            amount = int(
-                transaction["amount"]
-            )
-
-            sign = (
-                "+"
-                if amount > 0
-                else ""
-            )
-
+        for tx in transactions:
+            sign = "+" if tx["amount"] > 0 else ""
             st.write(
-                f"**{sign}{amount} ₽** · "
-                f"{transaction['description']} · "
-                f"{transaction['created_at']}"
+                f"**{sign}{tx['amount']} ₽** · "
+                f"{tx['description']} · {tx['created_at']}"
             )
 
     st.divider()
-
-    # =====================================================
-    # ИСПРАВЛЕННАЯ КНОПКА ВЫХОДА
-    # =====================================================
-
     st.button(
         "🚪 Выйти из аккаунта",
-        use_container_width=True,
-        key="account_logout",
         on_click=logout,
+        use_container_width=True,
     )
 
-
-# =========================================================
+# =====================================================
 # FOOTER
-# =========================================================
+# =====================================================
 
 st.divider()
-
 st.caption(
-    "👕 AI Stylist • AI-анализ одежды • "
-    "Персональный гардероб • "
-    "Постоянное хранение данных"
+    "AI Stylist · AI-анализ одежды · "
+    "Персональный гардероб · Постоянное хранение данных"
 )
