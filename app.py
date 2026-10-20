@@ -20,6 +20,32 @@ from PIL import Image, ImageOps
 
 load_dotenv()
 
+
+# =====================================================
+# YOOKASSA SETTINGS
+# =====================================================
+
+YOOKASSA_SHOP_ID = st.secrets.get(
+    "YOOKASSA_SHOP_ID",
+    os.getenv("YOOKASSA_SHOP_ID", ""),
+)
+
+YOOKASSA_SECRET_KEY = st.secrets.get(
+    "YOOKASSA_SECRET_KEY",
+    os.getenv("YOOKASSA_SECRET_KEY", ""),
+)
+
+YOOKASSA_RETURN_URL = st.secrets.get(
+    "YOOKASSA_RETURN_URL",
+    os.getenv("YOOKASSA_RETURN_URL", ""),
+)
+
+if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
+    from yookassa import Configuration
+
+    Configuration.account_id = YOOKASSA_SHOP_ID
+    Configuration.secret_key = YOOKASSA_SECRET_KEY
+
 st.set_page_config(
     page_title="AI Stylist",
     page_icon="👕",
