@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from PIL import Image, ImageOps
 
+from yookassa import Configuration, Payment
+
 # =====================================================
 # CONFIG
 # =====================================================
