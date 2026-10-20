@@ -1552,38 +1552,43 @@ if st.session_state.get("last_analysis"):
         st.markdown(improved_result)
 
     
-    st.divider()
-    st.subheader("🗂️ История оценок")
+    
+# =====================================================
+# ИСТОРИЯ ОЦЕНОК
+# =====================================================
 
-    analyses = get_analyses(user_id)
+st.divider()
+st.subheader("🗂️ История оценок")
 
-    if not analyses:
-        st.info("Сохранённых оценок пока нет.")
-    else:
-        for row in analyses:
-            with st.expander(
-                f"{row['style']} · {row['created_at']}"
+analyses = get_analyses(user_id)
+
+if not analyses:
+    st.info("Сохранённых оценок пока нет.")
+else:
+    for row in analyses:
+        with st.expander(
+            f"{row['style']} · {row['created_at']}"
+        ):
+            if row["image"]:
+                st.image(
+                    row["image"],
+                    caption="Фото образа",
+                    use_container_width=True,
+                )
+
+            st.markdown("### Первоначальная оценка")
+            st.markdown(row["analysis"] or "")
+
+            if row["improved_result"]:
+                st.markdown("### ✨ Улучшенные рекомендации")
+                st.markdown(row["improved_result"])
+
+            if st.button(
+                "🗑️ Удалить оценку",
+                key=f"delete_analysis_{row['id']}",
             ):
-                if row["image"]:
-                    st.image(
-                        row["image"],
-                        caption="Фото образа",
-                        use_container_width=True,
-                    )
-
-                st.markdown("### Первоначальная оценка")
-                st.markdown(row["analysis"] or "")
-
-                if row["improved_result"]:
-                    st.markdown("### ✨ Улучшенные рекомендации")
-                    st.markdown(row["improved_result"])
-
-                if st.button(
-                    "🗑️ Удалить оценку",
-                    key=f"delete_analysis_{row['id']}",
-                ):
-                    delete_analysis(row["id"], user_id)
-                    st.rerun()
+                delete_analysis(row["id"], user_id)
+                st.rerun()
 
 # =====================================================
 # WARDROBE
