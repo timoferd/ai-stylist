@@ -25,32 +25,30 @@ load_dotenv()
 # YOOKASSA SETTINGS
 # =====================================================
 
+
 # =====================================================
 # YOOKASSA CONFIG
-# Работает и с Streamlit Secrets, и с переменными окружения
 # =====================================================
 
+def get_secret(name, default=""):
+    # Сначала пробуем Streamlit Secrets
+    try:
+        value = st.secrets.get(name, default)
+        if value:
+            return str(value).strip()
+    except Exception:
+        pass
 
-try:
-    YOOKASSA_SHOP_ID = str(
-        st.secrets["YOOKASSA_SHOP_ID"]
-    ).strip()
-except Exception:
-    YOOKASSA_SHOP_ID = os.getenv(
-        "YOOKASSA_SHOP_ID", ""
-    ).strip()
+    # Затем проверяем переменные окружения
+    return os.getenv(name, default).strip()
 
-try:
-    YOOKASSA_SECRET_KEY = str(
-        st.secrets["YOOKASSA_SECRET_KEY"]
-    ).strip()
-except Exception:
-    YOOKASSA_SECRET_KEY = os.getenv(
-        "YOOKASSA_SECRET_KEY", ""
-    ).strip()
-YOOKASSA_RETURN_URL = st.secrets.get(
+
+YOOKASSA_SHOP_ID = get_secret("YOOKASSA_SHOP_ID")
+YOOKASSA_SECRET_KEY = get_secret("YOOKASSA_SECRET_KEY")
+
+YOOKASSA_RETURN_URL = get_secret(
     "YOOKASSA_RETURN_URL",
-    os.getenv("YOOKASSA_RETURN_URL", ""),
+    "https://ai-stylist.ru/"
 )
 
 if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
