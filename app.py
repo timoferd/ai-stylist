@@ -25,16 +25,29 @@ load_dotenv()
 # YOOKASSA SETTINGS
 # =====================================================
 
-YOOKASSA_SHOP_ID = st.secrets.get(
-    "YOOKASSA_SHOP_ID",
-    os.getenv("YOOKASSA_SHOP_ID", ""),
-)
+# =====================================================
+# YOOKASSA CONFIG
+# Работает и с Streamlit Secrets, и с переменными окружения
+# =====================================================
 
-YOOKASSA_SECRET_KEY = st.secrets.get(
-    "YOOKASSA_SECRET_KEY",
-    os.getenv("YOOKASSA_SECRET_KEY", ""),
-)
 
+try:
+    YOOKASSA_SHOP_ID = str(
+        st.secrets["YOOKASSA_SHOP_ID"]
+    ).strip()
+except Exception:
+    YOOKASSA_SHOP_ID = os.getenv(
+        "YOOKASSA_SHOP_ID", ""
+    ).strip()
+
+try:
+    YOOKASSA_SECRET_KEY = str(
+        st.secrets["YOOKASSA_SECRET_KEY"]
+    ).strip()
+except Exception:
+    YOOKASSA_SECRET_KEY = os.getenv(
+        "YOOKASSA_SECRET_KEY", ""
+    ).strip()
 YOOKASSA_RETURN_URL = st.secrets.get(
     "YOOKASSA_RETURN_URL",
     os.getenv("YOOKASSA_RETURN_URL", ""),
