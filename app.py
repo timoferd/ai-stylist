@@ -257,6 +257,18 @@ def init_database():
             FOREIGN KEY(user_id) REFERENCES users(id)
                 ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            payment_id TEXT UNIQUE NOT NULL,
+            amount INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+                ON DELETE CASCADE
+        );
+        
         """)
 
         # Critical migration: existing users may lack this column.
