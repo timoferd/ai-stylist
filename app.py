@@ -6,6 +6,8 @@ import base64
 import hashlib
 import secrets
 import sqlite3
+import uuid
+
 from datetime import datetime
 from html import escape
 
