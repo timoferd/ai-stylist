@@ -1977,48 +1977,49 @@ with tab_account:
     st.metric("Баланс", f"{user['balance']} ₽")
     
     
-st.subheader("💳 Пополнить баланс")
 
-if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
-    st.warning("Оплата пока не настроена: проверь секреты ЮKassa.")
-else:
-    amount = st.selectbox(
-        "Сумма пополнения",
-        [100, 300, 500, 1000, 2000],
-        format_func=lambda x: f"{x} ₽",
-        key="topup_amount",
-    )
+    st.subheader("💳 Пополнить баланс")
 
-    if st.button("Перейти к оплате", type="primary"):
-        try:
-            payment_id, payment_url = create_topup_payment(
-                user_id, amount
-            )
-            st.session_state["pending_topup_id"] = payment_id
-            st.link_button("Оплатить через ЮKassa", payment_url)
-        except Exception as e:
-            st.error(f"Не удалось создать платёж: {e}")
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        st.warning("Оплата пока не настроена: проверь секреты ЮKassa.")
+    else:
+        amount = st.selectbox(
+            "Сумма пополнения",
+            [100, 300, 500, 1000, 2000],
+            format_func=lambda x: f"{x} ₽",
+            key="topup_amount",
+        )
 
-pending_id = st.session_state.get("pending_topup_id")
-
-if pending_id:
-    st.info("После оплаты нажми кнопку проверки статуса.")
-
-    if st.button("Проверить оплату"):
-        try:
-            paid = check_topup_payment(pending_id, user_id)
-
-            if paid:
-                st.session_state.pop("pending_topup_id", None)
-                st.success("Баланс успешно пополнен!")
-                st.rerun()
-            else:
-                st.warning(
-                    "Платёж ещё не подтверждён. "
-                    "Подожди немного и проверь снова."
+        if st.button("Перейти к оплате", type="primary"):
+            try:
+                payment_id, payment_url = create_topup_payment(
+                    user_id, amount
                 )
-        except Exception as e:
-            st.error(f"Не удалось проверить платёж: {e}")
+                st.session_state["pending_topup_id"] = payment_id
+                st.link_button("Оплатить через ЮKassa", payment_url)
+            except Exception as e:
+                st.error(f"Не удалось создать платёж: {e}")
+
+    pending_id = st.session_state.get("pending_topup_id")
+
+    if pending_id:
+        st.info("После оплаты нажми кнопку проверки статуса.")
+
+        if st.button("Проверить оплату"):
+            try:
+                paid = check_topup_payment(pending_id, user_id)
+
+                if paid:
+                    st.session_state.pop("pending_topup_id", None)
+                    st.success("Баланс успешно пополнен!")
+                    st.rerun()
+                else:
+                    st.warning(
+                        "Платёж ещё не подтверждён. "
+                        "Подожди немного и проверь снова."
+                    )
+            except Exception as e:
+                st.error(f"Не удалось проверить платёж: {e}")
     st.subheader("🎁 Бесплатные попытки")
 
     st.write(
@@ -2044,12 +2045,6 @@ if pending_id:
     st.write(f"Оценка образа: {PRICES['analysis']} ₽")
     st.write(f"Улучшение образа: {PRICES['improve']} ₽")
     st.write(f"Сбор образа из гардероба: {PRICES['outfit']} ₽")
-
-    st.info(
-        "Реальное пополнение баланса пока не подключено. "
-        "Для приёма платежей необходимо настроить платёжного "
-        "провайдера и серверную проверку оплаты."
-    )
 
     st.subheader("📋 История операций")
 
