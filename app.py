@@ -550,20 +550,97 @@ def create_topup_payment(user_id, amount):
 
 
 def check_topup_payment(payment_id, user_id):
+    if not payment_id:
+        raise ValueError("Не указан ID платежа.")
+
+    # Получаем платёж только текущего пользователя.
     with get_db() as con:
         row = con.execute(
             """
-            SELECT * FROM payments
-            WHERE payment_id=? AND user_id=?
+            SELECT payment_id, amount, status
+            FROM payments
+            WHERE payment_id = ? AND user_id = ?
             """,
             (payment_id, user_id),
         ).fetchone()
 
-    if not row:
-        raise ValueError("Платёж не найден.")
+    if row is None:
+        raise ValueError(
+            "Платёж не найден или не принадлежит этому аккаунту."
+        )
 
-    if row["credited"]:
+    # Уже обработанный платёж повторно не зачисляем.
+    if row["status"] == "succeeded":
         return True
+
+    # Запрашиваем актуальный статус у ЮKassa.
+    payment = Payment.find_one(payment_id)
+    payment_status = getattr(payment, "status", None)
+
+    if payment_status != "succeeded":
+        if payment_status in ("canceled", "cancelled"):
+            with get_db() as con:
+                con.execute(
+                    """
+                    UPDATE payments
+                    SET status = 'canceled'
+                    WHERE payment_id = ? AND user_id = ?
+                    """,
+                    (payment_id, user_id),
+                )
+        return False
+
+    # Начисляем баланс и отмечаем платёж одной транзакцией.
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+
+        current = con.execute(
+            """
+            SELECT amount, status
+            FROM payments
+            WHERE payment_id = ? AND user_id = ?
+            """,
+            (payment_id, user_id),
+        ).fetchone()
+
+        if current is None:
+            raise ValueError("Платёж не найден.")
+
+        if current["status"] == "succeeded":
+            return True
+
+        if current["status"] != "pending":
+            return False
+
+        # Сверяем сумму с подтверждённым платежом.
+        confirmed_amount = getattr(payment, "amount", None)
+        if confirmed_amount is None:
+            raise ValueError("ЮKassa не вернула сумму платежа.")
+
+        try:
+            actual_amount = round(float(confirmed_amount.value), 2)
+            expected_amount = round(float(current["amount"]), 2)
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("Не удалось проверить сумму платежа.")
+
+        if actual_amount != expected_amount:
+            raise ValueError("Сумма платежа не совпадает с ожидаемой.")
+
+        con.execute(
+            "UPDATE users SET balance = balance + ? WHERE id = ?",
+            (int(current["amount"]), user_id),
+        )
+
+        con.execute(
+            """
+            UPDATE payments
+            SET status = 'succeeded'
+            WHERE payment_id = ? AND user_id = ? AND status = 'pending'
+            """,
+            (payment_id, user_id),
+        )
+
+    return Truee
 
     payment = Payment.find_one(payment_id)
 
