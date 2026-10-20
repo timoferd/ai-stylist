@@ -1456,91 +1456,100 @@ with tab_analysis:
         except Exception as e:
             st.error(f"Не удалось открыть изображение: {e}")
 
-    if st.session_state.get("last_analysis"):
-        st.subheader("Последний результат")
-        st.markdown(st.session_state.last_analysis)
+    
+if st.session_state.get("last_analysis"):
+    st.subheader("Последний результат")
+    st.markdown(st.session_state.last_analysis)
 
-        if st.button("✨ Улучшить рекомендации"):
-            user = get_user(user_id)
-            price = PRICES["improve"]
+    st.caption(
+        f"Стоимость улучшения рекомендаций: "
+        f"{PRICES['improve']} ₽"
+    )
 
-            if user["balance"] < price:
-                st.error(
-                    f"Для улучшения нужно {price} ₽. "
-                    "Недостаточно средств."
-                )
-            else:
-                try:
-                    with st.spinner("Улучшаем рекомендации..."):
-                        improved = call_ai([{
-                            "role": "user",
-                            "content": (
-                                "Улучши и конкретизируй рекомендации "
-                                "стилиста ниже. Предложи сочетания, "
-                                "цвета и практичные варианты. "
-                                "Отвечай по-русски в Markdown.\n\n"
-                                + st.session_state.last_analysis
-                            ),
-                        }])
+    if st.button(
+        "✨ Улучшить рекомендации",
+        key="improve_recommendations",
+        type="primary",
+    ):
+        user = get_user(user_id)
+        price = PRICES["improve"]
 
-                    if charge_user(
-                        user_id, price, "Улучшение образа"
-                    ):
-                        st.session_state.last_analysis = improved
+        if user["balance"] < price:
+            st.warning(
+                f"Для улучшения нужно {price} ₽. "
+                "Пополнить баланс можно во вкладке «Аккаунт»."
+            )
+        else:
+            try:
+                with st.spinner("Улучшаем рекомендации..."):
+                    improved = call_ai([{
+                        "role": "user",
+                        "content": (
+                            "Ты — профессиональный стилист. "
+                            "Улучши предыдущий анализ образа: "
+                            "сделай рекомендации конкретными, "
+                            "предложи подходящие цвета, сочетания "
+                            "и практичные варианты одежды. "
+                            "Не оценивай внешность человека. "
+                            "Отвечай на русском языке в Markdown.\n\n"
+                            + st.session_state.last_analysis
+                        ),
+                    }])
 
-                        with get_db() as con:
-                            con.execute(
-                                """
-                                UPDATE outfit_analyses
-                                SET improved_result=?
-                                WHERE id=(
-                                    SELECT id FROM outfit_analyses
-                                    WHERE user_id=?
-                                    ORDER BY id DESC LIMIT 1
-                                )
-                                """,
-                                (improved, user_id),
-                            )
-
-                        st.success("Рекомендации улучшены.")
-                        st.rerun()
-                    else:
-                        st.error("Не удалось списать средства.")
-
-                except Exception as e:
-                    st.error(f"Не удалось улучшить рекомендации: {e}")
-
-    st.divider()
-    st.subheader("🗂️ Сохранённые анализы")
-
-    analyses = get_analyses(user_id)
-
-    if not analyses:
-        st.info("Сохранённых анализов пока нет.")
-    else:
-        for row in analyses:
-            with st.expander(
-                f"{row['style']} · {row['created_at']}"
-            ):
-                if row["image"]:
-                    st.image(
-                        row["image"],
-                        use_container_width=True,
+                # Проверяем, что AI действительно вернул результат.
+                if not improved or not improved.strip():
+                    raise RuntimeError(
+                        "AI не вернул улучшенные рекомендации."
                     )
 
-                st.markdown(row["analysis"] or "")
-
-                if row["improved_result"]:
-                    st.markdown("### Улучшенные рекомендации")
-                    st.markdown(row["improved_result"])
-
-                if st.button(
-                    "Удалить анализ",
-                    key=f"delete_analysis_{row['id']}",
+                # Списываем деньги только после успешного ответа AI.
+                if not charge_user(
+                    user_id,
+                    price,
+                    "Улучшение образа",
                 ):
-                    delete_analysis(row["id"], user_id)
+                    st.error(
+                        "Не удалось списать средства. "
+                        "Обнови страницу и проверь баланс."
+                    )
+                else:
+                    # Отдельно сохраняем улучшенный результат.
+                    st.session_state.last_improved_result = improved
+
+                    # Обновляем запись последнего анализа.
+                    with get_db() as con:
+                        con.execute(
+                            """
+                            UPDATE outfit_analyses
+                            SET improved_result = ?
+                            WHERE id = (
+                                SELECT id
+                                FROM outfit_analyses
+                                WHERE user_id = ?
+                                ORDER BY id DESC
+                                LIMIT 1
+                            )
+                            """,
+                            (improved, user_id),
+                        )
+
+                    st.success("Рекомендации улучшены и сохранены.")
                     st.rerun()
 
+            except Exception as e:
+                st.error(
+                    f"Не удалось улучшить рекомендации: {e}"
+                )
+
+    # Отображаем улучшенный вариант отдельно от исходного.
+    improved_result = st.session_state.get(
+        "last_improved_result"
+    )
+
+    if improved_result:
+        st.divider()
+        st.subheader("✨ Улучшенные рекомендации")
+        st.markdown(improved_result)
 
 # =====================================================
 # WARDROBE
