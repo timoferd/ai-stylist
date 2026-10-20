@@ -2024,7 +2024,7 @@ with tab_account:
     else:
         amount = st.selectbox(
             "Сумма пополнения",
-            [100, 300, 500, 1000, 2000],
+            [25, 50, 100, 150, 300, 500, 1000, 2000],
             format_func=lambda x: f"{x} ₽",
             key="topup_amount",
         )
