@@ -449,6 +449,137 @@ def use_free_attempt(user_id, column):
             (user_id,),
         )
         return cur.rowcount == 1
+        
+def create_topup_payment(user_id, amount):
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        raise RuntimeError("Не настроены ключи ЮKassa.")
+
+    if not YOOKASSA_RETURN_URL.startswith("https://"):
+        raise RuntimeError("Укажи HTTPS-адрес сайта в YOOKASSA_RETURN_URL.")
+
+    if amount not in (100, 300, 500, 1000, 2000):
+        raise ValueError("Недопустимая сумма пополнения.")
+
+    payment = Payment.create(
+        {
+            "amount": {
+                "value": f"{amount:.2f}",
+                "currency": "RUB",
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": YOOKASSA_RETURN_URL,
+            },
+            "capture": True,
+            "description": f"Пополнение баланса AI Stylist на {amount} руб.",
+            "metadata": {
+                "user_id": str(user_id),
+                "purpose": "balance_topup",
+            },
+        },
+        str(uuid.uuid4()),
+    )
+
+    payment_id = payment.id
+    confirmation_url = payment.confirmation.confirmation_url
+
+    with get_db() as con:
+        con.execute(
+            """
+            INSERT INTO payments
+                (user_id, payment_id, amount, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, payment_id, amount, payment.status, now()),
+        )
+
+    return payment_id, confirmation_url
+
+
+def check_topup_payment(payment_id, user_id):
+    with get_db() as con:
+        row = con.execute(
+            """
+            SELECT * FROM payments
+            WHERE payment_id=? AND user_id=?
+            """,
+            (payment_id, user_id),
+        ).fetchone()
+
+    if not row:
+        raise ValueError("Платёж не найден.")
+
+    if row["credited"]:
+        return True
+
+    payment = Payment.find_one(payment_id)
+
+    # Проверяем данные, полученные непосредственно из API ЮKassa.
+    if str(payment.amount.value) != f"{row['amount']:.2f}":
+        raise RuntimeError("Сумма платежа не совпадает.")
+
+    metadata = payment.metadata or {}
+    if (
+        str(metadata.get("user_id", "")) != str(user_id)
+        or metadata.get("purpose") != "balance_topup"
+    ):
+        raise RuntimeError("Не удалось подтвердить принадлежность платежа.")
+
+    if payment.status != "succeeded" or not payment.paid:
+        with get_db() as con:
+            con.execute(
+                "UPDATE payments SET status=? WHERE payment_id=?",
+                (payment.status, payment_id),
+            )
+        return False
+
+    # Атомарное зачисление: повторная проверка не начислит деньги дважды.
+    with get_db() as con:
+        con.execute("BEGIN IMMEDIATE")
+
+        current = con.execute(
+            """
+            SELECT credited, amount FROM payments
+            WHERE payment_id=? AND user_id=?
+            """,
+            (payment_id, user_id),
+        ).fetchone()
+
+        if not current:
+            raise ValueError("Платёж не найден.")
+
+        if current["credited"]:
+            return True
+
+        con.execute(
+            "UPDATE users SET balance=balance+? WHERE id=?",
+            (current["amount"], user_id),
+        )
+
+        con.execute(
+            """
+            INSERT INTO transactions
+                (user_id, amount, description, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                current["amount"],
+                f"Пополнение через ЮKassa ({payment_id})",
+                now(),
+            ),
+        )
+
+        con.execute(
+            """
+            UPDATE payments
+            SET status='succeeded', credited=1
+            WHERE payment_id=? AND credited=0
+            """,
+            (payment_id,),
+        )
+
+    return True
 
 
 # =====================================================
@@ -1705,7 +1836,50 @@ with tab_account:
     st.header("👤 Мой аккаунт")
     st.write(f"Email: **{user['email']}**")
     st.metric("Баланс", f"{user['balance']} ₽")
+    
+    
+st.subheader("💳 Пополнить баланс")
 
+if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+    st.warning("Оплата пока не настроена: проверь секреты ЮKassa.")
+else:
+    amount = st.selectbox(
+        "Сумма пополнения",
+        [100, 300, 500, 1000, 2000],
+        format_func=lambda x: f"{x} ₽",
+        key="topup_amount",
+    )
+
+    if st.button("Перейти к оплате", type="primary"):
+        try:
+            payment_id, payment_url = create_topup_payment(
+                user_id, amount
+            )
+            st.session_state["pending_topup_id"] = payment_id
+            st.link_button("Оплатить через ЮKassa", payment_url)
+        except Exception as e:
+            st.error(f"Не удалось создать платёж: {e}")
+
+pending_id = st.session_state.get("pending_topup_id")
+
+if pending_id:
+    st.info("После оплаты нажми кнопку проверки статуса.")
+
+    if st.button("Проверить оплату"):
+        try:
+            paid = check_topup_payment(pending_id, user_id)
+
+            if paid:
+                st.session_state.pop("pending_topup_id", None)
+                st.success("Баланс успешно пополнен!")
+                st.rerun()
+            else:
+                st.warning(
+                    "Платёж ещё не подтверждён. "
+                    "Подожди немного и проверь снова."
+                )
+        except Exception as e:
+            st.error(f"Не удалось проверить платёж: {e}")
     st.subheader("🎁 Бесплатные попытки")
 
     st.write(
